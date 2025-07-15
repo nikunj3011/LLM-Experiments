@@ -20,12 +20,12 @@ check_memory_usage()
 
 torch.cuda.set_per_process_memory_fraction(0.8, 0)
 # Set model path (local directory)
-model_path = "Model"  # Update with the correct path
+model_path = "MBZUAI/LaMini-Flan-T5-248M"  # Update with the correct path
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 # model = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=True)
-model = AutoModelForCausalLM.from_pretrained("Model", load_in_4bit=True)
+model = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=True)
 torch.cuda.empty_cache()
 
 # Move model to GPU

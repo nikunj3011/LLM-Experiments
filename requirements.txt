@@ -1,8 +1,16 @@
-torch
-transformers
-accelerate
 sentence-transformers
 chromadb
 langchain
-bitsandbytes
 psutil
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+sse-starlette>=2.0.0
+
+torch>=2.2.0
+transformers>=4.37.0
+accelerate>=0.27.0
+bitsandbytes>=0.42.0
+
+# General Utilities
+pydantic>=2.6.0
+python-dotenv>=1.0.0

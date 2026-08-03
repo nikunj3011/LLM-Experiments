@@ -5,6 +5,7 @@ import os
 import gc
 import json
 import asyncio
+from pathlib import Path
 import re
 import base64
 import mimetypes
@@ -66,6 +67,7 @@ app.add_middleware(
 
 # Configuration Constants
 QWEN_MODEL_PATH = r"F:\models\code\Qwen2.5-Coder-7B-Instruct"
+PHI_MOE_MODEL_PATH = Path(r"F:\models\moe\Qwen3-0.6B")
 GEMMA_MODEL_PATH = r"D:\dev\LLM-Experiments\any-to-any\gemma"
 QWEN35_GGUF_CLIP = r"D:\dev\LLM-Experiments\any-to-any\mmproj-F32.gguf"
 QWEN35_GGUF_FILE = r"D:\dev\LLM-Experiments\any-to-any\qwen3.5-0.8b-Q4_K_M.gguf"
@@ -89,6 +91,12 @@ AVAILABLE_MODELS = [
         "name": "Qwen2.5 Coder 7B",
         "supports_vision": False,
         "description": "Code and general reasoning model (Default)"
+    },
+    {
+        "id": "phi_moe",
+        "name": "Microsoft Phi-tiny-MoE",
+        "supports_vision": False,
+        "description": "MOE and general reasoning model"
     },
     {
         "id": "gemma",
@@ -171,6 +179,83 @@ class DynamicModelManager:
             self.active_model_name = "qwen"
             print("[VRAM Manager] Qwen2.5-Coder successfully loaded into VRAM.")
             return self.model, self.tokenizer_or_processor
+        
+    async def load_phi_moe(self):
+        """Loads microsoft/Phi-tiny-MoE-instruct in 4-bit mode."""
+        async with self.lock:
+            if self.active_model_name == "phi_moe":
+                return self.model, self.tokenizer_or_processor
+
+            print("[VRAM Manager] Requesting Phi-tiny-MoE. Swapping VRAM...")
+            self.unload_vram()
+
+            compute_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=compute_dtype
+            )
+
+            print(f"[VRAM Manager] Loading Phi-MoE tokenizer: {PHI_MOE_MODEL_PATH}")
+            self.tokenizer_or_processor = AutoTokenizer.from_pretrained(
+                PHI_MOE_MODEL_PATH,
+                trust_remote_code=True,  # Critical for Phi MoE custom architecture
+                local_files_only=True
+            )
+
+            print(f"[VRAM Manager] Loading 4-bit Phi-MoE model: {PHI_MOE_MODEL_PATH}")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                PHI_MOE_MODEL_PATH,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,  # Critical for Phi MoE custom architecture
+                local_files_only=True
+            ).eval()
+
+            self.active_model_name = "phi_moe"
+            print("[VRAM Manager] Phi-tiny-MoE successfully loaded into VRAM.")
+            return self.model, self.tokenizer_or_processor
+
+    async def load_tiny_moe(self):
+        """Loads Qwen2.5-Coder-7B in 4-bit mode."""
+        async with self.lock:
+            if self.active_model_name == "tiny_moe":
+                return self.model, self.tokenizer_or_processor
+
+            print("[VRAM Manager] Requesting tiny_moe. Swapping VRAM...")
+            self.unload_vram()
+
+            compute_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=compute_dtype
+            )
+
+            print(f"[VRAM Manager] Loading Qwen tokenizer: {QWEN_MODEL_PATH}")
+            self.tokenizer_or_processor = AutoTokenizer.from_pretrained(
+                QWEN_MODEL_PATH,
+                trust_remote_code=True,
+                local_files_only=True
+            )
+
+            print(f"[VRAM Manager] Loading 4-bit Qwen model: {QWEN_MODEL_PATH}")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                QWEN_MODEL_PATH,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+                local_files_only=True
+            ).eval()
+
+            self.active_model_name = "qwen"
+            print("[VRAM Manager] Qwen2.5-Coder successfully loaded into VRAM.")
+            return self.model, self.tokenizer_or_processor
+            
     async def load_gemma_gguf(self):
         """Loads Gemma-4 E4B Q8_0 GGUF model using llama-cpp-python."""
         async with self.lock:
@@ -892,51 +977,94 @@ async def stream_chat(payload: StreamRequestPayload):
         return StreamingResponse(event_generator_gguf(), media_type="text/event-stream")
 
     # 2. GEMMA MODEL STREAMING ROUTE
-    elif model_name == "gemma":
-        loaded_model, processor = await manager.load_gemma_gguf()
+    elif model_name == 'gemma-4-vision':
+        llm, _ = await manager.load_gemma_gguf()
+
+        formatted_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for msg in payload.messages:
+            formatted_messages.append({
+                "role": msg.role,
+                "content": extract_text_from_content(msg.content)
+            })
+
+        stream = llm.create_chat_completion(
+            messages=formatted_messages,
+            max_tokens=2048,
+            temperature=0.7,
+            top_p=0.9,
+            stream=True
+        )
+
+        async def event_generator_gguf():
+            full_response = ""
+            for chunk in stream:
+                delta = chunk["choices"][0]["delta"]
+                if "content" in delta:
+                    token = delta["content"]
+                    full_response += token
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+                    await asyncio.sleep(0.001)
+            
+            saved_id = append_and_save_chat(session_id, user_prompt, full_response, "Gemma-4-E4B-it")
+            yield f"data: {json.dumps({'done': True, 'session_id': saved_id})}\n\n"
+
+        return StreamingResponse(event_generator_gguf(), media_type="text/event-stream")
+
+    # 3. PYTORCH TRANSFORMERS STREAMING (QWEN DEFAULT ROUTE)
+    elif model_name in ["phi", "phi_moe", "phi-tiny-moe"]:
+        try:
+            from transformers.utils.import_utils import is_torch_fx_available
+        except ImportError:
+            def is_torch_fx_available():
+                return True
+        loaded_model, tokenizer = await manager.load_phi_moe()
 
         messages = []
         for msg in payload.messages:
             text_content = extract_text_from_content(msg.content)
             messages.append({"role": msg.role, "content": text_content})
 
-        formatted_input = processor.apply_chat_template(
+        formatted_input = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
+            enable_thinking=True
         )
-        inputs = processor(text=formatted_input, return_tensors="pt").to(loaded_model.device)
+        inputs = tokenizer([formatted_input], return_tensors="pt").to(loaded_model.device)
 
-        streamer = TextIteratorStreamer(
-            processor.tokenizer if hasattr(processor, "tokenizer") else processor, 
-            skip_prompt=True, 
-            skip_special_tokens=True
-        )
+        # Use tokenizer's eos_token_id or unk/pad fallback if pad_token_id is None
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
         generation_kwargs = dict(
             **inputs,
             streamer=streamer,
             max_new_tokens=2048,
             temperature=0.7,
             top_p=0.9,
-            do_sample=True
+            do_sample=True,
+            pad_token_id=pad_id
         )
 
         thread = Thread(target=loaded_model.generate, kwargs=generation_kwargs)
         thread.start()
 
-        async def event_generator_gemma():
+        async def event_generator_hf():
             full_response = ""
             for new_text in streamer:
                 full_response += new_text
                 yield f"data: {json.dumps({'token': new_text})}\n\n"
                 await asyncio.sleep(0.01)
             
-            saved_id = append_and_save_chat(session_id, user_prompt, full_response, "Gemma-4-E4B-it")
+            saved_id = append_and_save_chat(
+                session_id, 
+                user_prompt, 
+                full_response, 
+                "Phi-tiny-MoE-instruct"
+            )
             yield f"data: {json.dumps({'done': True, 'session_id': saved_id})}\n\n"
 
-        return StreamingResponse(event_generator_gemma(), media_type="text/event-stream")
-
-    # 3. PYTORCH TRANSFORMERS STREAMING (QWEN DEFAULT ROUTE)
+        return StreamingResponse(event_generator_hf(), media_type="text/event-stream")
     else:
         loaded_model, tokenizer = await manager.load_qwen()
 

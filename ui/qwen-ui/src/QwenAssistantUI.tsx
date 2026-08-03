@@ -6,10 +6,10 @@ import remarkGfm from "remark-gfm";
 const API_BASE = "http://127.0.0.1:8000/api";
 
 const AVAILABLE_MODELS = [
-  { id: "qwen2.5-coder", name: "qwen2.5-coder" },
-  { id: "qwen3.5-gguf", name: "qwen3.5-gguf" },
-  { id: "unlimited-ocr", name: "baidu/Unlimited-OCR" },
   { id: "gemma-4-vision", name: "Gemma-4-Vision" },
+  { id: "qwen3.5-gguf", name: "qwen3.5-gguf" },
+  { id: "phi_moe", name: "phi_moe" },
+  { id: "qwen2.5-coder", name: "qwen2.5-coder" },
 ];
 
 // TypeScript Interfaces
@@ -130,7 +130,7 @@ const sanitizeImageFile = (file: File, maxDimension: number = 1024): Promise<Fil
 export default function QwenAssistantUI(): React.JSX.Element {
   const [sessions, setSessions] = useState<string[]>([]);
   const [selectedSession, setSelectedSession] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState<string>("qwen2.5-coder");
+  const [selectedModel, setSelectedModel] = useState<string>("gemma-4-vision");
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputPrompt, setInputPrompt] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);

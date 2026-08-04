@@ -187,8 +187,9 @@ class DynamicModelManager:
                 if backend_type == "gguf":
                     mmproj_path = config.get("mmproj_path")
                     valid_clip_path = mmproj_path if (mmproj_path and os.path.exists(mmproj_path)) else None
-
-                    chat_handler = Qwen25VLChatHandler(clip_model_path=valid_clip_path)
+                    chat_handler = None
+                    if valid_clip_path != None:
+                        chat_handler = Qwen25VLChatHandler(clip_model_path=valid_clip_path)
                     if valid_clip_path:
                         print(f"[VRAM Manager] Binding Vision MMProj: {valid_clip_path}")
                     chat_format = "chatml" if "qwen" in target_id or "gemma" in target_id else None

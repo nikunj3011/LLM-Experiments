@@ -5,14 +5,15 @@ import remarkGfm from "remark-gfm";
 
 const API_BASE = "http://127.0.0.1:8000/api";
 
-const AVAILABLE_MODELS = [
-  { id: "gemma-4-vision", name: "Gemma-4-Vision" },
-  { id: "qwen3.5-gguf", name: "qwen3.5-gguf" },
-  { id: "phi_moe", name: "phi_moe" },
-  { id: "qwen2.5-coder", name: "qwen2.5-coder" },
-];
+export interface ModelOption {
+  id: string;
+  name: string;
+  backend_type?: string;
+  modality?: string;
+  supports_vision?: boolean;
+  description?: string;
+}
 
-// TypeScript Interfaces
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string | Record<string, unknown> | Array<unknown>;
@@ -47,9 +48,13 @@ export interface StreamTokenPayload {
   token?: string;
   done?: boolean;
   session_id?: string;
+  metrics?: {
+    elapsed_sec: number;
+    tokens: number;
+    tps: number;
+  };
 }
 
-/** Helper function to convert a File object into a Base64 Data URL */
 const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -58,8 +63,7 @@ const fileToBase64 = (file: File): Promise<string> => {
     reader.onerror = (error) => reject(error);
   });
 };
-/** Strips AI workflow metadata and cleans filename for HTTP boundary safety */
-/** Resizes large AI images and converts to lightweight JPEG before network transmission */
+
 const sanitizeImageFile = (file: File, maxDimension: number = 1024): Promise<File> => {
   return new Promise((resolve) => {
     if (!file.type.startsWith("image/")) {
@@ -74,7 +78,6 @@ const sanitizeImageFile = (file: File, maxDimension: number = 1024): Promise<Fil
     img.onload = () => {
       URL.revokeObjectURL(url);
 
-      // Calculate constrained dimensions while maintaining aspect ratio
       let width = img.naturalWidth;
       let height = img.naturalHeight;
 
@@ -98,10 +101,8 @@ const sanitizeImageFile = (file: File, maxDimension: number = 1024): Promise<Fil
         return;
       }
 
-      // Draw resized image onto canvas
       ctx.drawImage(img, 0, 0, width, height);
 
-      // Compress into lightweight JPEG (usually under 500 KB)
       canvas.toBlob(
         (blob) => {
           if (!blob) {
@@ -114,7 +115,7 @@ const sanitizeImageFile = (file: File, maxDimension: number = 1024): Promise<Fil
           resolve(cleanFile);
         },
         "image/jpeg",
-        0.85 // 85% compression quality
+        0.85
       );
     };
 
@@ -128,9 +129,12 @@ const sanitizeImageFile = (file: File, maxDimension: number = 1024): Promise<Fil
 };
 
 export default function QwenAssistantUI(): React.JSX.Element {
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([
+    { id: "qwen", name: "Qwen2.5 Coder 7B" }
+  ]);
   const [sessions, setSessions] = useState<string[]>([]);
   const [selectedSession, setSelectedSession] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState<string>("gemma-4-vision");
+  const [selectedModel, setSelectedModel] = useState<string>("qwen");
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputPrompt, setInputPrompt] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -141,12 +145,10 @@ export default function QwenAssistantUI(): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Auto-scroll chat window
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isGenerating]);
 
-  // Cleanup preview Object URLs on unmount
   useEffect(() => {
     return () => {
       if (filePreviewUrl && filePreviewUrl.startsWith("blob:")) {
@@ -155,13 +157,28 @@ export default function QwenAssistantUI(): React.JSX.Element {
     };
   }, [filePreviewUrl]);
 
-  // Initial Load
   useEffect(() => {
+    fetchAvailableModels();
     fetchSessions();
     handleNewChat();
   }, []);
 
-  // Auto-resize textarea based on content
+  const fetchAvailableModels = async (): Promise<void> => {
+    try {
+      const res = await fetch(`${API_BASE}/models`);
+      if (!res.ok) throw new Error("Failed to fetch models");
+      const data = await res.json();
+      if (data.models && Array.isArray(data.models) && data.models.length > 0) {
+        setAvailableModels(data.models);
+        if (!data.models.some((m: ModelOption) => m.id === selectedModel)) {
+          setSelectedModel(data.models[0].id);
+        }
+      }
+    } catch (e) {
+      console.warn("Could not load backend model list dynamically, using fallback list:", e);
+    }
+  };
+
   const handleTextareaChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     setInputPrompt(e.target.value);
     if (textareaRef.current) {
@@ -242,7 +259,7 @@ export default function QwenAssistantUI(): React.JSX.Element {
           { role: "user", content: "Summarize all my past chats." },
           {
             role: "assistant",
-            content: "⚠️ No previous chat history found in `./chat_history` to summarize.",
+            content: "⚠️ No previous chat history found to summarize.",
           },
         ]);
         return;
@@ -289,7 +306,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
     let currentFile = selectedFile;
     const currentFileName = selectedFile?.name;
 
-    // Convert file to base64 Data URL for message history preview
     let base64ImagePreview: string | undefined = undefined;
     if (currentFile && currentFile.type.startsWith("image/")) {
       try {
@@ -316,76 +332,25 @@ export default function QwenAssistantUI(): React.JSX.Element {
     handleRemoveFile();
     setIsGenerating(true);
 
-    // --------------------------------------------------------------------------
-    // CASE A: ATTACHMENT PRESENT -> MULTIPART FORM
-    // --------------------------------------------------------------------------
-    if (currentFile) {
-      setMessages([...updatedMessages, { role: "assistant", content: `⏳ Swapping VRAM and executing ${selectedModel}...` }]);
-
-      try {
-        // SANITIZATION STEP: Strip AI metadata & sanitize filename
-        currentFile = await sanitizeImageFile(currentFile);
-
-        const formData = new FormData();
-        formData.append("prompt", text);
-        formData.append("file", currentFile); // Safe, sanitized file attached here
-        formData.append("session_id", selectedSession);
-        formData.append("model", selectedModel);
-        formData.append("history", JSON.stringify(updatedMessages));
-
-        const res = await fetch(`${API_BASE}/chat`, {
-          method: "POST",
-          body: formData,
-        });
-
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-
-        const data = await res.json();
-
-        if (data.session_id) {
-          setSelectedSession(data.session_id);
-        }
-
-        setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = {
-            role: "assistant",
-            content: data.response || data.markdown || "No output returned.",
-            modelUsed: data.active_model || selectedModel,
-          };
-          return next;
-        });
-        fetchSessions();
-      } catch (err: any) {
-        console.error("OCR/Vision Request failed:", err);
-        setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = {
-            role: "assistant",
-            content: `❌ Error processing document: ${err.message || "Failed request."}`,
-          };
-          return next;
-        });
-      } finally {
-        setIsGenerating(false);
-      }
-      return;
-    }
-
-    // --------------------------------------------------------------------------
-    // CASE B: PURE TEXT PROMPT -> SSE STREAMING
-    // --------------------------------------------------------------------------
-    setMessages([...updatedMessages, { role: "assistant", content: "" }]);
+    setMessages([...updatedMessages, { role: "assistant", content: "", modelUsed: selectedModel }]);
 
     try {
+      const formData = new FormData();
+      formData.append("prompt", text);
+      formData.append("model", selectedModel);
+      if (selectedSession) {
+        formData.append("session_id", selectedSession);
+      }
+      formData.append("messages", JSON.stringify(updatedMessages));
+
+      if (currentFile) {
+        currentFile = await sanitizeImageFile(currentFile);
+        formData.append("file", currentFile);
+      }
+
       const response = await fetch(`${API_BASE}/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: selectedSession,
-          model: selectedModel,
-          messages: updatedMessages,
-        }),
+        body: formData,
       });
 
       if (!response.ok) throw new Error(`Server returned HTTP ${response.status}`);
@@ -427,7 +392,7 @@ export default function QwenAssistantUI(): React.JSX.Element {
                 }
               }
             } catch {
-              // Ignore partial JSON frame parsing glitches
+              // Ignore partial frames
             }
           }
         }
@@ -459,7 +424,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
     <div className="min-h-screen bg-[#f4f4f5] text-[#18181b] flex flex-col items-center p-4 sm:p-8 font-sans">
       <div className="w-full max-w-5xl flex flex-col gap-4">
         
-        {/* Title Header */}
         <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[#e4e4e7]">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold flex items-center gap-2 text-[#18181b]">
@@ -476,7 +440,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
           </div>
         </header>
 
-        {/* Top Controls Bar */}
         <div className="grid grid-cols-12 gap-2 bg-white p-2.5 rounded-xl border border-[#e4e4e7] shadow-sm">
           <button
             onClick={handleNewChat}
@@ -485,20 +448,18 @@ export default function QwenAssistantUI(): React.JSX.Element {
             <Plus size={16} /> New Chat
           </button>
 
-          {/* Model Selector Dropdown */}
           <select
             value={selectedModel}
             onChange={(e: ChangeEvent<HTMLSelectElement>) => setSelectedModel(e.target.value)}
             className="col-span-12 sm:col-span-3 bg-white border border-[#d4d4d8] text-[#18181b] text-sm rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium"
           >
-            {AVAILABLE_MODELS.map((m) => (
+            {availableModels.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
               </option>
             ))}
           </select>
 
-          {/* Session Selector Dropdown */}
           <select
             value={selectedSession}
             onChange={(e: ChangeEvent<HTMLSelectElement>) => {
@@ -542,7 +503,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
           </button>
         </div>
 
-        {/* Chat Log Box */}
         <div className="bg-white border border-[#e4e4e7] rounded-xl h-[550px] flex flex-col shadow-sm overflow-hidden">
           <div className="bg-[#fafafa] px-4 py-2.5 border-b border-[#e4e4e7] text-xs font-semibold text-[#71717a] uppercase tracking-wider flex justify-between items-center">
             <span>Conversation History</span>
@@ -572,7 +532,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
                         : "border-[#e4e4e7] bg-white text-[#18181b]"
                     }`}
                   >
-                    {/* Attachment Render inside Message Bubble */}
                     {msg.filePreview && (
                       <div className="mb-3">
                         <img
@@ -604,6 +563,29 @@ export default function QwenAssistantUI(): React.JSX.Element {
                         h1: ({ children }) => <h1 className="text-xl font-bold my-2 text-left">{children}</h1>,
                         h2: ({ children }) => <h2 className="text-lg font-bold my-2 text-left">{children}</h2>,
                         h3: ({ children }) => <h3 className="text-md font-bold my-1 text-left">{children}</h3>,
+                        img: ({ src, alt }) => (
+                          <div className="relative group my-3 inline-block max-w-full">
+                            <img
+                              src={src}
+                              alt={alt || "AI Generated Image"}
+                              className="max-h-[500px] w-auto rounded-xl border border-[#e4e4e7] object-contain shadow-sm bg-[#fafafa] transition-transform duration-200 group-hover:scale-[1.01]"
+                              loading="lazy"
+                            />
+                            {src && (
+                              <a
+                                href={src}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                download="generated_image.png"
+                                className="absolute bottom-3 right-3 bg-[#18181b]/80 hover:bg-[#18181b] text-white p-2 rounded-lg backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center gap-1.5 text-xs font-medium shadow-md"
+                                title="Open / Download High-Res Image"
+                              >
+                                <Download size={14} />
+                                <span>Save</span>
+                              </a>
+                            )}
+                          </div>
+                        ),
                         code({ className, children, ...props }) {
                           const match = /language-(\w+)/.exec(className || "");
                           const isInline = !match && !String(children).includes("\n");
@@ -642,7 +624,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
           </div>
         </div>
 
-        {/* Attachment Preview Box */}
         {selectedFile && (
           <div className="flex items-center gap-3 bg-white p-2.5 rounded-xl border border-indigo-200 shadow-sm w-fit animate-in fade-in duration-200">
             {filePreviewUrl ? (
@@ -670,13 +651,12 @@ export default function QwenAssistantUI(): React.JSX.Element {
           </div>
         )}
 
-        {/* Prompt Input Area */}
         <div className="flex gap-2 items-end bg-white p-2 rounded-xl border border-[#e4e4e7] shadow-sm">
           <input
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            accept="image/*,.pdf"
+            accept="image/*,audio/*,video/*,.pdf,.txt,.py,.js,.json"
             className="hidden"
           />
 
@@ -684,7 +664,7 @@ export default function QwenAssistantUI(): React.JSX.Element {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="bg-[#fafafa] hover:bg-[#f4f4f5] border border-[#d4d4d8] text-[#71717a] hover:text-indigo-600 p-3 rounded-lg flex items-center justify-center transition-colors cursor-pointer self-stretch"
-            title="Attach Image or Document"
+            title="Attach Media or Document"
           >
             <Paperclip size={20} />
           </button>
@@ -696,7 +676,7 @@ export default function QwenAssistantUI(): React.JSX.Element {
             onKeyDown={handleKeyDown}
             placeholder={
               selectedFile
-                ? `Add parsing instructions for ${selectedModel}...`
+                ? `Add instructions for analyzing ${selectedFile.name}...`
                 : "Type a prompt or paste code... (Shift+Enter for new line)"
             }
             rows={1}
@@ -719,7 +699,6 @@ export default function QwenAssistantUI(): React.JSX.Element {
           </button>
         </div>
 
-        {/* VRAM Clear Footer */}
         <div className="flex justify-start">
           <button
             onClick={handleClearVram}

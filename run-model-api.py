@@ -28,12 +28,19 @@ import subprocess
 import fitz           
 import docx
 import pandas as pd
+import scipy.io.wavfile
+
+import urllib.parse
+import requests
+from bs4 import BeautifulSoup
+import torchaudio
 
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     AutoProcessor,
     ChameleonForConditionalGeneration,
+    MusicgenForConditionalGeneration,
     BitsAndBytesConfig,
     TextIteratorStreamer
 )
@@ -78,7 +85,18 @@ app.add_middleware(
 
 SESSIONS_DIR = "./chat_history"
 TEMP_UPLOADS_DIR = "./temp_uploads"
-SYSTEM_PROMPT = "You are a pro in all fields especially in coding, a helpful AI assistant."
+SYSTEM_PROMPT = "You are a pro in all fields especially in coding, an AI assistant."
+N_CTX = 5120
+# file_path = os.path.join("./system_prompts/Anthropic/Official/", "2026-06-09-claude-fable-5.md")
+file_path = os.path.join("./system_prompts/Anthropic/Official/", "2026-06-09-claude-fable-5v2.md")
+try:
+    # Open and read the file content
+    with open(file_path, "r", encoding="utf-8") as file:
+        SYSTEM_PROMPT = SYSTEM_PROMPT + file.read().strip()
+except FileNotFoundError:
+    # Fallback if the file is missing
+    SYSTEM_PROMPT = "You are a pro in all fields especially in coding, an AI assistant."
+    print(f"Warning: {file_path} not found. Using default prompt.")
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
@@ -95,6 +113,59 @@ AVAILABLE_MODELS: List[Dict[str, Any]] = [
         "supports_vision": False,
         "path": r"F:\models\code\Qwen2.5-Coder-7B-Instruct",
         "description": "Code and general reasoning model"
+    },
+    {
+        "id": "gemma-translate",
+        "name": "Gemma-translate",
+        "backend_type": "gguf",
+        "modality": "Text Generation",
+        "supports_vision": True,
+        "path": r"F:\models\translate\googletranslategemma-4b-it\translategemma-4b-it.Q8_0.gguf",
+        "mmproj_path": r"F:\models\translate\googletranslategemma-4b-it\translategemma-4b-it.mmproj-Q8_0.gguf",
+        "description": "Code and general reasoning model"
+    },
+    {
+        "id": "qwen3.6-gguf",
+        "name": "Qwen3.6 A3B (gguf)",
+        "backend_type": "gguf",
+        "modality": "Any-to-Any",
+        "supports_vision": True,
+        "path": r"F:\models\down\LuffyTheFoxQwen3.6-35B-A3B-Uncensored-Genesis-Hermes-V6-GGUF\model.gguf",
+        "mmproj_path": r"F:\models\down\LuffyTheFoxQwen3.6-35B-A3B-Uncensored-Genesis-Hermes-V6-GGUF\mmproj.gguf",
+        "description": "Multimodal GGUF model via llama-cpp"
+    },
+    {
+        "id": "gemma4-un-gguf",
+        "name": "Gemma 4 Un A4B (gguf)",
+        "backend_type": "gguf",
+        "modality": "Any-to-Any",
+        "supports_vision": True,
+        # "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
+        "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-19b-a4b-it-instruct-heretic-uncensored-q4_k_m.gguf",
+        "mmproj_path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-mmproj-BF16.gguf",
+        "description": "Multimodal GGUF model via llama-cpp"
+    },
+    {
+        "id": "qwythos-9b-un-gguf",
+        "name": "Qwythos-9B-Claude-Mythos UN (gguf)",
+        "backend_type": "gguf",
+        "modality": "Any-to-Any",
+        "supports_vision": True,
+        # "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
+        "path": r"F:\models\down\Qwythos-9B-Claude-Mythos-5-1M\Qwythos-9B-Claude-Mythos-5-1M-uncensored-heretic-Q8_0.gguf",
+        "mmproj_path": r"F:\models\down\Qwythos-9B-Claude-Mythos-5-1M\mmproj-Qwythos-9B-v2-BF16.gguf",
+        "description": "Multimodal GGUF model via llama-cpp"
+    },
+    {
+        "id": "qwythos-9b-v2-un-gguf",
+        "name": "Qwythos-9B-V2-Claude-Mythos UN (gguf)",
+        "backend_type": "gguf",
+        "modality": "Any-to-Any",
+        "supports_vision": True,
+        # "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
+        "path": r"D:\dev\LLM-Experiments\any-to-any\qwethos\Qwythos-9B-v2-Q8_0.gguf",
+        "mmproj_path": r"D:\dev\LLM-Experiments\any-to-any\qwethos\mmproj-Qwythos-9B-v2-BF16.gguf",
+        "description": "Multimodal GGUF model via llama-cpp"
     },
     {
         "id": "phi_moe",
@@ -134,7 +205,16 @@ AVAILABLE_MODELS: List[Dict[str, Any]] = [
         "model_type": "chameleon",
         "path": r"F:\models\any-to-any\chameleon-7b-hf",
         "description": "Meta Chameleon Any-to-Any safetensors"
-    }
+    },
+    {
+        "id": "musicgen-melody-large",
+        "name": "MusicGen Melody Large",
+        "backend_type": "musicgen",
+        "modality": "Text-to-Audio",
+        "supports_vision": False,
+        "path": r"D:\dev\LLM-Experiments\any-to-any\facebookmusicgen-melody-large",
+        "description": "Meta MusicGen Melody Large for text/melody-conditioned music generation"
+    },
 ]
 
 def get_model_config(model_id: str) -> Dict[str, Any]:
@@ -143,6 +223,20 @@ def get_model_config(model_id: str) -> Dict[str, Any]:
         if m["id"].lower() == selected_id:
             return m
     return AVAILABLE_MODELS[0]
+
+def approx_truncate_user_prompt(user_prompt: str, max_gen: int = 512) -> str:
+    # 1 token ≈ 3.5 characters (safe/conservative threshold)
+    CHARS_PER_TOKEN = 3.5 
+    
+    # Calculate non-user character usage
+    overhead_chars = len(SYSTEM_PROMPT) + (max_gen * 4) + 250  # 250 char buffer
+    max_user_chars = int((N_CTX * CHARS_PER_TOKEN) - overhead_chars)
+    
+    if len(user_prompt) > max_user_chars:
+        print(f"[Truncating] User prompt reduced from {len(user_prompt)} to {max_user_chars} chars.")
+        return user_prompt[:max_user_chars]
+        
+    return user_prompt
 
 # ------------------------------------------------------------------------------
 # DYNAMIC VRAM MODEL MANAGER
@@ -200,7 +294,7 @@ class DynamicModelManager:
                         chat_format=chat_format,
                         chat_handler=chat_handler,
                         n_gpu_layers=20,  
-                        n_ctx=2048,
+                        n_ctx=5000,
                         n_threads=6,
                         use_mmap=True,
                         use_mlock=False,
@@ -208,6 +302,23 @@ class DynamicModelManager:
                     )
                     self.tokenizer_or_processor = None
 
+                elif backend_type == "musicgen":
+                    model_path = config["path"]
+                    compute_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+                    print(f"[VRAM Manager] Loading MusicGen Processor & Model: {model_path}")
+                    self.tokenizer_or_processor = AutoProcessor.from_pretrained(
+                        model_path,
+                        local_files_only=os.path.exists(model_path)
+                    )
+                    self.model = MusicgenForConditionalGeneration.from_pretrained(
+                        model_path,
+                        torch_dtype=compute_dtype,
+                        local_files_only=os.path.exists(model_path)
+                    ).to("cuda" if torch.cuda.is_available() else "cpu").eval()
+
+                    self.compute_dtype = compute_dtype
+                    
                 elif backend_type == "safetensors":
                     # Determine compute dtype dynamically
                     compute_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float16
@@ -340,6 +451,46 @@ def extract_text_from_content(content: Any) -> str:
         return str(content.get("text", "")).strip()
     return str(content).strip()
 
+def fit_messages_to_context(
+    messages: list[dict],
+    tokenizer_or_model,
+    max_context_limit: int = 4096,
+    max_generation_tokens: int = 2048,
+    safety_buffer: int = 64
+) -> list[dict]:
+    """Prunes older chat history messages to ensure total context fits within limits."""
+    budget = max_context_limit - max_generation_tokens - safety_buffer
+    
+    # Helper to count tokens roughly or precisely
+    def count_tokens(msg_list: list[dict]) -> int:
+        full_text = "".join([m.get("content", "") if isinstance(m.get("content"), str) else "" for m in msg_list])
+        if hasattr(tokenizer_or_model, "tokenize"):
+            # llama-cpp or GGUF tokenizer
+            return len(tokenizer_or_model.tokenize(full_text.encode("utf-8")))
+        elif hasattr(tokenizer_or_model, "encode"):
+            # HF Tokenizer
+            return len(tokenizer_or_model.encode(full_text))
+        return int(len(full_text) / 3.5) # Conservative fallback ratio
+
+    # Keep system message separate if present
+    system_msg = [m for m in messages if m["role"] == "system"]
+    chat_msgs = [m for m in messages if m["role"] != "system"]
+
+    # Prune oldest messages first until we are under budget
+    while chat_msgs and count_tokens(system_msg + chat_msgs) > budget:
+        # Don't delete the last remaining user prompt
+        if len(chat_msgs) <= 1:
+            # If even the last user message exceeds budget, truncate its text content
+            text_content = chat_msgs[-1]["content"]
+            if isinstance(text_content, str):
+                max_chars = int(budget * 3.5)
+                chat_msgs[-1]["content"] = text_content[-max_chars:] # keep recent portion
+            break
+        # Pop the oldest turn (User + Assistant pair or single message)
+        chat_msgs.pop(0)
+
+    return system_msg + chat_msgs
+
 def append_and_save_chat(
     session_id: Optional[str],
     user_msg: str,
@@ -434,7 +585,105 @@ def sanitize_image(image_path: str) -> None:
             img.save(image_path, format="JPEG", quality=95)
     except Exception as e:
         logger.error(f"Failed to sanitize image metadata: {e}")
+from duckduckgo_search import DDGS
 
+def perform_web_search(query: str, max_results: int = 10) -> str:
+    try:
+        # Use context manager & specify fallback backend and explicit region
+        with DDGS() as ddgs:
+            # Try 'html' or 'lite' backend if default returns []
+            results = list(ddgs.text(
+                query, 
+                max_results=max_results, 
+                backend="html",      # Options: 'api', 'html', 'lite'
+                region="wt-wt"       # 'wt-wt' stands for Worldwide
+            ))
+            
+            # Fallback to 'lite' if 'html' yields nothing
+            if not results:
+                results = list(ddgs.text(query, max_results=max_results, backend="lite"))
+
+            if not results:
+                return ""
+            
+            search_summary = "\n--- Live Web Search Results ---\n"
+            for idx, item in enumerate(results, 1):
+                search_summary += f"[{idx}] {item['title']}\nSnippet: {item['body']}\nURL: {item['href']}\n\n"
+            search_summary += "--- End of Web Search Results ---\n"
+            return search_summary
+
+    except Exception as e:
+        print(f"[WebSearch Error]: {e}")
+        return ""
+
+def perform_google_scrape(query: str, max_results: int = 3) -> str:
+    """Scrapes Google Search directly without official API keys or external search libraries."""
+    encoded_query = urllib.parse.quote_plus(query)
+    url = f"https://www.google.com/search?q={encoded_query}&num={max_results + 2}&hl=en"
+
+    # Google requires a modern browser User-Agent header to return full HTML
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code != 200:
+            print(
+                f"[Google Scraper Warning]: Received HTTP {response.status_code}"
+            )
+            return ""
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        results = []
+        # Google search result cards are usually enclosed in 'div.g' containers
+        search_blocks = soup.select("div.g")
+
+        for block in search_blocks:
+            title_elem = block.select_one("h3")
+            link_elem = block.select_one("a")
+            # Snippets are usually stored in container classes like '.VwiC3b' or '[style*="-webkit-line-clamp"]'
+            snippet_elem = block.select_one(
+                "div.VwiC3b, div.IsZvec, div.yD8vcf"
+            )
+
+            if title_elem and link_elem and link_elem.get("href"):
+                title = title_elem.get_text(strip=True)
+                href = link_elem["href"]
+                snippet = (
+                    snippet_elem.get_text(strip=True) if snippet_elem else ""
+                )
+
+                # Skip non-http links or internal anchor tags
+                if href.startswith("http"):
+                    results.append(
+                        {"title": title, "url": href, "snippet": snippet}
+                    )
+
+            if len(results) >= max_results:
+                break
+
+        if not results:
+            return ""
+
+        search_summary = "\n--- Live Google Search Results (Scraped) ---\n"
+        for idx, item in enumerate(results, 1):
+            search_summary += f"[{idx}] {item['title']}\nSnippet: {item['snippet']}\nURL: {item['url']}\n\n"
+        search_summary += "--- End of Web Search Results ---\n"
+
+        return search_summary
+
+    except Exception as e:
+        print(f"[Google Scraper Error]: {e}")
+        return ""
+    
 # ------------------------------------------------------------------------------
 # ROUTES
 # ------------------------------------------------------------------------------
@@ -460,9 +709,18 @@ async def get_models():
 
 @app.get("/api/sessions")
 async def list_sessions():
-    files = [f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")]
-    sessions = [os.path.splitext(f)[0] for f in files]
+    files = [
+        os.path.join(SESSIONS_DIR, f) 
+        for f in os.listdir(SESSIONS_DIR) 
+        if f.endswith(".json")
+    ]
+    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    
+    # 3. Extract just the session IDs (filenames without .json)
+    sessions = [os.path.splitext(os.path.basename(f))[0] for f in files]
+    
     return {"sessions": sessions}
+
 
 @app.post("/api/load_session")
 def load_session(req: LoadRequest):
@@ -526,16 +784,14 @@ async def unified_stream_chat(
     model: str = Form("qwen"),
     session_id: Optional[str] = Form(None),
     messages: Optional[str] = Form(None),
-    max_tokens: int = Form(2048),
+    max_tokens: int = Form(N_CTX),
     temperature: float = Form(0.7),
+    web_search: bool = Form(True),
     file: Optional[UploadFile] = File(None)
 ):
     background_tasks.add_task(cleanup_temp_uploads)
 
-    model_id = (model or "qwen").lower().strip()
-    loaded_model, tokenizer_or_processor, config = await manager.load_model_by_config(model_id)
-    is_chameleon = config.get("model_type") == "chameleon"
-
+    # 1. PARSE INCOMING MESSAGES
     parsed_messages = []
     if messages:
         try:
@@ -547,6 +803,7 @@ async def unified_stream_chat(
     if not user_prompt and parsed_messages:
         user_prompt = extract_text_from_content(parsed_messages[-1].get("content", ""))
 
+    # 2. FILE & MULTIMEDIA PROCESSING
     temp_path = None
     media_kind = "text"
     b64_file_contents = []
@@ -614,59 +871,140 @@ async def unified_stream_chat(
                 user_prompt += f"\n\nFILE CONTENT:\n{processed['text']}"
             media_kind = "document"
 
-    # --- 1. GGUF BACKEND ---
-    # --- 1. GGUF BACKEND ---
-    if config["backend_type"] == "gguf":
-        formatted_messages = []
+    # 3. WEB SEARCH INJECTION
+    search_keywords = ["search", "latest", "news", "today", "who is", "what is the current"]
+    should_search = web_search or any(kw in user_prompt.lower() for kw in search_keywords)
+    
+    if should_search and user_prompt:
+        search_data = perform_google_scrape(user_prompt)
+        if search_data:
+            user_prompt = f"{search_data}\n\nUser Question: {user_prompt}"
 
-        # 1. Reconstruct chat history cleanly
-        if parsed_messages:
-            for msg in parsed_messages:
-                formatted_messages.append({
-                    "role": msg["role"],
-                    "content": extract_text_from_content(msg["content"])
-                })
-        
-        # Ensure there is at least one message for the current user input
-        if not formatted_messages or formatted_messages[-1]["role"] != "user":
-            formatted_messages.append({"role": "user", "content": user_prompt})
-        else:
-            formatted_messages[-1]["content"] = user_prompt
+    # 4. LOAD MODEL & CONFIG
+    model_id = (model or "qwen").lower().strip()
+    loaded_model, tokenizer_or_processor, config = await manager.load_model_by_config(model_id)
+    is_chameleon = config.get("model_type") == "chameleon"
+    backend_type = config.get("backend_type")
 
-        # 2. Inject System Prompt
-        if SYSTEM_PROMPT:
-            if formatted_messages[0]["role"] == "system":
-                formatted_messages[0]["content"] = SYSTEM_PROMPT
+    # 5. SPECIAL NON-CHAT BACKENDS (MUSICGEN / IMAGE GEN)
+    if backend_type == "musicgen":
+        async def event_generator_music():
+            start_time = time.time()
+            os.makedirs("static/outputs", exist_ok=True)
+            output_filename = f"music_{int(time.time())}.wav"
+            output_path = os.path.join("static/outputs", output_filename)
+
+            input_audio, sampling_rate = None, None
+            if temp_path and media_kind == "audio":
+                input_audio, sampling_rate = torchaudio.load(temp_path)
+
+            if input_audio is not None:
+                inputs = tokenizer_or_processor(text=[user_prompt], audio=input_audio, sampling_rate=sampling_rate, padding=True, return_tensors="pt").to(loaded_model.device)
             else:
-                formatted_messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+                inputs = tokenizer_or_processor(text=[user_prompt], padding=True, return_tensors="pt").to(loaded_model.device)
 
-        # 3. Format multimodal payload for the last user message
+            import numpy as np
+            def generate_wav():
+                gen_tokens = min(max_tokens, 750) if max_tokens else 256 
+                with torch.no_grad():
+                    audio_outputs = loaded_model.generate(**inputs, do_sample=True, guidance_scale=3.0, max_new_tokens=gen_tokens)
+                audio_data = audio_outputs[0].cpu().float().numpy()
+                if audio_data.ndim == 2:
+                    audio_data = audio_data.T
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+                audio_int16 = (audio_data * 32767).astype(np.int16)
+                target_sr = loaded_model.config.audio_encoder.sampling_rate
+                scipy.io.wavfile.write(output_path, rate=int(target_sr), data=audio_int16)
+
+            await asyncio.to_thread(generate_wav)
+
+            audio_url = f"http://127.0.0.1:8000/static/outputs/{output_filename}"
+            audio_response = f"\n\n🎵 **Generated Track:**\n<audio controls src=\"{audio_url}\"></audio>\n\n[Download Audio]({audio_url})\n\n"
+
+            yield f"data: {json.dumps({'token': audio_response})}\n\n"
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+
+            elapsed = round(time.time() - start_time, 2)
+            saved_id = append_and_save_chat(session_id=session_id, user_msg=user_prompt, assistant_msg=audio_response, model_used=config['name'], file_name=file.filename if file else None)
+            yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': 1, 'tps': 1}})}\n\n"
+
+        return StreamingResponse(event_generator_music(), media_type="text/event-stream")
+
+    is_image_generation_task = "generate image" in user_prompt.lower() or getattr(config, "is_diffusion", False)
+    if is_image_generation_task and backend_type != "gguf":
+        async def event_generator_image():
+            start_time = time.time()
+            os.makedirs("static/outputs", exist_ok=True)
+            output_filename = f"gen_{int(time.time())}.png"
+            output_path = os.path.join("static/outputs", output_filename)
+            image_url = f"http://127.0.0.1:8000/static/outputs/{output_filename}"
+            markdown_image = f"\n\n![Generated Image]({image_url})\n\n"
+
+            yield f"data: {json.dumps({'token': markdown_image})}\n\n"
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+
+            elapsed = round(time.time() - start_time, 2)
+            saved_id = append_and_save_chat(session_id=session_id, user_msg=user_prompt, assistant_msg=markdown_image, model_used=config['name'], file_name=file.filename if file else None)
+            yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': 1, 'tps': 1}})}\n\n"
+
+        return StreamingResponse(event_generator_image(), media_type="text/event-stream")
+
+    # 6. UNIFIED CHAT MESSAGE PARSING (FOR BOTH GGUF AND SAFETENSORS)
+    unified_messages = []
+    
+    if parsed_messages:
+        for msg in parsed_messages:
+            unified_messages.append({
+                "role": msg["role"],
+                "content": extract_text_from_content(msg["content"])
+            })
+
+    # Ensure current user turn exists
+    if not unified_messages or unified_messages[-1]["role"] != "user":
+        unified_messages.append({"role": "user", "content": user_prompt})
+    else:
+        unified_messages[-1]["content"] = user_prompt
+
+    # Prepend System Prompt
+    if SYSTEM_PROMPT:
+        if unified_messages[0]["role"] == "system":
+            unified_messages[0]["content"] = SYSTEM_PROMPT
+        else:
+            unified_messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+
+    # Apply Dynamic Context Pruning
+    model_ctx_limit = N_CTX
+    unified_messages = fit_messages_to_context(
+        messages=unified_messages,
+        tokenizer_or_model=tokenizer_or_processor if backend_type != "gguf" else loaded_model,
+        max_context_limit=model_ctx_limit,
+        max_generation_tokens=2048
+    )
+
+    # 7. ROUTE CHAT TO BACKEND
+    if backend_type == "gguf":
+        # Format multimodal payload for GGUF if images exist
         if b64_file_contents:
-            # Find the last 'user' role message to attach media
-            for msg in reversed(formatted_messages):
+            for msg in reversed(unified_messages):
                 if msg["role"] == "user":
                     text_content = msg["content"] if isinstance(msg["content"], str) else user_prompt
                     multimodal_content = [{"type": "text", "text": text_content}]
-                    
                     for img_b64 in b64_file_contents:
                         multimodal_content.append({
                             "type": "image_url",
-                            "image_url": {"url": img_b64} # Ensures clean base64 string
+                            "image_url": {"url": img_b64}
                         })
-                    
                     msg["content"] = multimodal_content
                     break
 
         async def event_generator_gguf():
-            full_response = ""
-            start_time = time.time()
-            token_count = 0
-
+            full_response, start_time, token_count = "", time.time(), 0
             try:
                 def get_stream():
-                    # Multimodal GGUF MUST use create_chat_completion
                     return loaded_model.create_chat_completion(
-                        messages=formatted_messages,
+                        messages=unified_messages,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         top_p=0.9,
@@ -674,7 +1012,6 @@ async def unified_stream_chat(
                     )
 
                 stream = await asyncio.to_thread(get_stream)
-
                 for chunk in stream:
                     if await request.is_disconnected():
                         print("[SSE] Client disconnected mid-stream.")
@@ -702,7 +1039,6 @@ async def unified_stream_chat(
 
             elapsed = round(time.time() - start_time, 2)
             tps = round(token_count / elapsed, 1) if elapsed > 0 else 0
-
             saved_id = append_and_save_chat(
                 session_id=session_id,
                 user_msg=user_prompt,
@@ -710,119 +1046,77 @@ async def unified_stream_chat(
                 model_used=f"{config['name']} ({media_kind.capitalize()})",
                 file_name=file.filename if file else None
             )
-
             yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': token_count, 'tps': tps}})}\n\n"
 
         return StreamingResponse(event_generator_gguf(), media_type="text/event-stream")
 
-    # --- 2. SAFETENSORS / TRANSFORMERS BACKEND ---
     else:
+        # SAFETENSORS / TRANSFORMERS BACKEND
         processor = tokenizer_or_processor
-        is_image_generation_task = "generate image" in user_prompt.lower() or getattr(config, "is_diffusion", False)
 
-        if is_image_generation_task:
-            async def event_generator_image():
-                start_time = time.time()
-                os.makedirs("static/outputs", exist_ok=True)
-                output_filename = f"gen_{int(time.time())}.png"
-                output_path = os.path.join("static/outputs", output_filename)
+        if is_chameleon:
+            images = None
+            chameleon_prompt = user_prompt
+            if temp_path and media_kind == "image":
+                with Image.open(temp_path) as img:
+                    images = [img.convert("RGB")]
+                if "<image>" not in chameleon_prompt:
+                    chameleon_prompt = f"<image>\n{chameleon_prompt}"
 
-                image_url = f"http://127.0.0.1:8000/static/outputs/{output_filename}"
-                markdown_image = f"\n\n![Generated Image]({image_url})\n\n"
+            inputs = processor(text=chameleon_prompt, images=images, return_tensors="pt")
+            target_dtype = getattr(loaded_model, "dtype", next(loaded_model.parameters()).dtype)
+            inputs = {
+                k: v.to(loaded_model.device, dtype=target_dtype) if torch.is_floating_point(v)
+                else v.to(loaded_model.device)
+                for k, v in inputs.items()
+            }
+            streamer = TextIteratorStreamer(processor.tokenizer, skip_prompt=True, skip_special_tokens=True)
 
-                yield f"data: {json.dumps({'token': markdown_image})}\n\n"
+        else:
+            tokenizer = processor
+            formatted_input = tokenizer.apply_chat_template(unified_messages, tokenize=False, add_generation_prompt=True)
+            inputs = tokenizer([formatted_input], return_tensors="pt").to(loaded_model.device)
+            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
+        generation_kwargs = dict(
+            **inputs,
+            streamer=streamer,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+            top_p=0.9,
+            do_sample=True
+        )
+
+        thread = Thread(target=loaded_model.generate, kwargs=generation_kwargs)
+        thread.start()
+
+        async def event_generator_hf():
+            full_response, start_time, token_count = "", time.time(), 0
+            try:
+                for new_text in streamer:
+                    if await request.is_disconnected():
+                        print("[SSE] Client disconnected mid-stream.")
+                        break
+                    full_response += new_text
+                    token_count += 1
+                    yield f"data: {json.dumps({'token': new_text})}\n\n"
+                    await asyncio.sleep(0.001)
+            finally:
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
 
-                elapsed = round(time.time() - start_time, 2)
-                saved_id = append_and_save_chat(
-                    session_id=session_id,
-                    user_msg=user_prompt,
-                    assistant_msg=markdown_image,
-                    model_used=config['name'],
-                    file_name=file.filename if file else None
-                )
-                yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': 1, 'tps': 1}})}\n\n"
-
-            return StreamingResponse(event_generator_image(), media_type="text/event-stream")
-
-        else:
-            if is_chameleon:
-                images = None
-                chameleon_prompt = user_prompt
-
-                if temp_path and media_kind == "image":
-                    with Image.open(temp_path) as img:
-                        images = [img.convert("RGB")]
-                    
-                    # Chameleon REQUIRES the `<image>` token in the prompt text!
-                    if "<image>" not in chameleon_prompt:
-                        chameleon_prompt = f"<image>\n{chameleon_prompt}"
-
-                # Process text and image
-                inputs = processor(text=chameleon_prompt, images=images, return_tensors="pt")
-
-                # Cast float tensors (pixel_values) to match model precision
-                target_dtype = getattr(loaded_model, "dtype", next(loaded_model.parameters()).dtype)
-                inputs = {
-                    k: v.to(loaded_model.device, dtype=target_dtype) if torch.is_floating_point(v) 
-                    else v.to(loaded_model.device)
-                    for k, v in inputs.items()
-                }
-
-                streamer = TextIteratorStreamer(processor.tokenizer, skip_prompt=True, skip_special_tokens=True)    
-            else:
-                tokenizer = processor
-                history = parsed_messages if parsed_messages else [{"role": "user", "content": user_prompt}]
-                formatted_input = tokenizer.apply_chat_template(history, tokenize=False, add_generation_prompt=True)
-                
-                inputs = tokenizer([formatted_input], return_tensors="pt").to(loaded_model.device)
-                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-
-            generation_kwargs = dict(
-                **inputs,
-                streamer=streamer,
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                top_p=0.9,
-                do_sample=True
+            elapsed = round(time.time() - start_time, 2)
+            tps = round(token_count / elapsed, 1) if elapsed > 0 else 0
+            saved_id = append_and_save_chat(
+                session_id=session_id,
+                user_msg=user_prompt,
+                assistant_msg=full_response,
+                model_used=f"{config['name']} ({media_kind.capitalize()})",
+                file_name=file.filename if file else None
             )
+            yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': token_count, 'tps': tps}})}\n\n"
 
-            thread = Thread(target=loaded_model.generate, kwargs=generation_kwargs)
-            thread.start()
-
-            async def event_generator_hf():
-                full_response = ""
-                start_time = time.time()
-                token_count = 0
-
-                try:
-                    for new_text in streamer:
-                        if await request.is_disconnected():
-                            print("[SSE] Client disconnected mid-stream.")
-                            break
-                        full_response += new_text
-                        token_count += 1
-                        yield f"data: {json.dumps({'token': new_text})}\n\n"
-                        await asyncio.sleep(0.001)
-                finally:
-                    if temp_path and os.path.exists(temp_path):
-                        os.remove(temp_path)
-
-                elapsed = round(time.time() - start_time, 2)
-                tps = round(token_count / elapsed, 1) if elapsed > 0 else 0
-
-                saved_id = append_and_save_chat(
-                    session_id=session_id,
-                    user_msg=user_prompt,
-                    assistant_msg=full_response,
-                    model_used=f"{config['name']} ({media_kind.capitalize()})",
-                    file_name=file.filename if file else None
-                )
-                yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': token_count, 'tps': tps}})}\n\n"
-
-            return StreamingResponse(event_generator_hf(), media_type="text/event-stream")
+        return StreamingResponse(event_generator_hf(), media_type="text/event-stream")
 
 if __name__ == "__main__":
     import uvicorn

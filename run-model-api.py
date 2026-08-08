@@ -86,9 +86,10 @@ app.add_middleware(
 SESSIONS_DIR = "./chat_history"
 TEMP_UPLOADS_DIR = "./temp_uploads"
 SYSTEM_PROMPT = "You are a pro in all fields especially in coding, an AI assistant."
+CONFIG_PATH = Path("config.json")
 N_CTX = 5120
 # file_path = os.path.join("./system_prompts/Anthropic/Official/", "2026-06-09-claude-fable-5.md")
-file_path = os.path.join("./system_prompts/Anthropic/Official/", "2026-06-09-claude-fable-5v2.md")
+file_path = Path("system_prompt.md")
 try:
     # Open and read the file content
     with open(file_path, "r", encoding="utf-8") as file:
@@ -101,121 +102,22 @@ except FileNotFoundError:
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
 
+def load_models_from_config(config_file: Path) -> List[Dict[str, Any]]:
+    """Loads the available models list from a JSON configuration file."""
+    if not config_file.exists():
+        # Fallback or error handling if the file is missing
+        print(f"Warning: {config_file} not found. Returning empty list.")
+        return []
+
+    with open(config_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        return data.get("AVAILABLE_MODELS", [])
+    
 # ------------------------------------------------------------------------------
 # DYNAMIC MODEL REGISTRY
 # ------------------------------------------------------------------------------
-AVAILABLE_MODELS: List[Dict[str, Any]] = [
-    {
-        "id": "qwen",
-        "name": "Qwen2.5 Coder 7B",
-        "backend_type": "safetensors",
-        "modality": "Text Generation",
-        "supports_vision": False,
-        "path": r"F:\models\code\Qwen2.5-Coder-7B-Instruct",
-        "description": "Code and general reasoning model"
-    },
-    {
-        "id": "gemma-translate",
-        "name": "Gemma-translate",
-        "backend_type": "gguf",
-        "modality": "Text Generation",
-        "supports_vision": True,
-        "path": r"F:\models\translate\googletranslategemma-4b-it\translategemma-4b-it.Q8_0.gguf",
-        "mmproj_path": r"F:\models\translate\googletranslategemma-4b-it\translategemma-4b-it.mmproj-Q8_0.gguf",
-        "description": "Code and general reasoning model"
-    },
-    {
-        "id": "qwen3.6-gguf",
-        "name": "Qwen3.6 A3B (gguf)",
-        "backend_type": "gguf",
-        "modality": "Any-to-Any",
-        "supports_vision": True,
-        "path": r"F:\models\down\LuffyTheFoxQwen3.6-35B-A3B-Uncensored-Genesis-Hermes-V6-GGUF\model.gguf",
-        "mmproj_path": r"F:\models\down\LuffyTheFoxQwen3.6-35B-A3B-Uncensored-Genesis-Hermes-V6-GGUF\mmproj.gguf",
-        "description": "Multimodal GGUF model via llama-cpp"
-    },
-    {
-        "id": "gemma4-un-gguf",
-        "name": "Gemma 4 Un A4B (gguf)",
-        "backend_type": "gguf",
-        "modality": "Any-to-Any",
-        "supports_vision": True,
-        # "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
-        "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-19b-a4b-it-instruct-heretic-uncensored-q4_k_m.gguf",
-        "mmproj_path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-mmproj-BF16.gguf",
-        "description": "Multimodal GGUF model via llama-cpp"
-    },
-    {
-        "id": "qwythos-9b-un-gguf",
-        "name": "Qwythos-9B-Claude-Mythos UN (gguf)",
-        "backend_type": "gguf",
-        "modality": "Any-to-Any",
-        "supports_vision": True,
-        # "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
-        "path": r"F:\models\down\Qwythos-9B-Claude-Mythos-5-1M\Qwythos-9B-Claude-Mythos-5-1M-uncensored-heretic-Q8_0.gguf",
-        "mmproj_path": r"F:\models\down\Qwythos-9B-Claude-Mythos-5-1M\mmproj-Qwythos-9B-v2-BF16.gguf",
-        "description": "Multimodal GGUF model via llama-cpp"
-    },
-    {
-        "id": "qwythos-9b-v2-un-gguf",
-        "name": "Qwythos-9B-V2-Claude-Mythos UN (gguf)",
-        "backend_type": "gguf",
-        "modality": "Any-to-Any",
-        "supports_vision": True,
-        # "path": r"F:\models\down\llmfan46gemma-4-26B-A4B-it-ultra-uncensored-heretic-GGUF\gemma-4-26B-A4B-it-ultra-uncensored-heretic-Q4_K_M.gguf",
-        "path": r"D:\dev\LLM-Experiments\any-to-any\qwethos\Qwythos-9B-v2-Q8_0.gguf",
-        "mmproj_path": r"D:\dev\LLM-Experiments\any-to-any\qwethos\mmproj-Qwythos-9B-v2-BF16.gguf",
-        "description": "Multimodal GGUF model via llama-cpp"
-    },
-    {
-        "id": "phi_moe",
-        "name": "Microsoft Phi-tiny-MoE",
-        "backend_type": "safetensors",
-        "modality": "Text Generation",
-        "supports_vision": False,
-        "path": r"F:\models\moe\Qwen3-0.6B",
-        "description": "MOE reasoning model"
-    },
-    {
-        "id": "gemma-gguf",
-        "name": "Gemma-4 E4B (GGUF)",
-        "backend_type": "gguf",
-        "modality": "Any-to-Any",
-        "supports_vision": True,
-        "path": r"D:\dev\LLM-Experiments\any-to-any\gemma\gemma-4-E4B-it-ultra-uncensored-heretic-Q8_0.gguf",
-        "mmproj_path": r"D:\dev\LLM-Experiments\any-to-any\gemma\gemma-4-E4B-it-mmproj-BF16.gguf",
-        "description": "Multimodal GGUF model via llama-cpp"
-    },
-    {
-        "id": "qwen3.5-gguf",
-        "name": "Qwen3.5 0.8B (GGUF)",
-        "backend_type": "gguf",
-        "modality": "Image-Text-to-Text",
-        "supports_vision": True,
-        "path": r"D:\dev\LLM-Experiments\any-to-any\qwen3.5-0.8b-Q4_K_M.gguf",
-        "mmproj_path": r"D:\dev\LLM-Experiments\any-to-any\mmproj-F32.gguf",
-        "description": "Fast lightweight GGUF vision model"
-    },
-    {
-        "id": "chameleon-7b-plus",
-        "name": "Chameleon-7b-plus",
-        "backend_type": "safetensors",
-        "modality": "Any-to-Any",
-        "supports_vision": True,
-        "model_type": "chameleon",
-        "path": r"F:\models\any-to-any\chameleon-7b-hf",
-        "description": "Meta Chameleon Any-to-Any safetensors"
-    },
-    {
-        "id": "musicgen-melody-large",
-        "name": "MusicGen Melody Large",
-        "backend_type": "musicgen",
-        "modality": "Text-to-Audio",
-        "supports_vision": False,
-        "path": r"D:\dev\LLM-Experiments\any-to-any\facebookmusicgen-melody-large",
-        "description": "Meta MusicGen Melody Large for text/melody-conditioned music generation"
-    },
-]
+AVAILABLE_MODELS: List[Dict[str, Any]] = load_models_from_config(CONFIG_PATH)
+
 
 def get_model_config(model_id: str) -> Dict[str, Any]:
     selected_id = (model_id or "qwen").lower().strip()
@@ -238,10 +140,11 @@ def approx_truncate_user_prompt(user_prompt: str, max_gen: int = 512) -> str:
         
     return user_prompt
 
-# ------------------------------------------------------------------------------
+# ==============================================================================
 # DYNAMIC VRAM MODEL MANAGER
-# ------------------------------------------------------------------------------
+# ==============================================================================
 class DynamicModelManager:
+    """Manages loading and unloading of models into VRAM to prevent OOM errors."""
     def __init__(self):
         self.active_model_id: Optional[str] = None
         self.active_config: Optional[Dict[str, Any]] = None
@@ -250,6 +153,7 @@ class DynamicModelManager:
         self.lock = asyncio.Lock()
 
     def unload_vram(self):
+        """Forces the current model out of memory and runs garbage collection."""
         if self.model is not None:
             print(f"[VRAM Manager] Unloading '{self.active_model_id}' from VRAM...")
             del self.model
@@ -266,28 +170,27 @@ class DynamicModelManager:
             print("[VRAM Manager] VRAM cleared successfully.")
 
     async def load_model_by_config(self, model_id: str):
+        """Loads a model dynamically based on its defined backend type."""
         config = get_model_config(model_id)
         target_id = config["id"]
         backend_type = config["backend_type"]
 
         async with self.lock:
+            # Skip if already loaded
             if self.active_model_id == target_id:
                 return self.model, self.tokenizer_or_processor, config
 
             print(f"[VRAM Manager] Requesting '{target_id}' ({backend_type.upper()}). Swapping VRAM...")
-            self.unload_vram()
+            self.unload_vram() # Unload previous before loading new
 
             try:
+                # Backend 1: GGUF (llama.cpp)
                 if backend_type == "gguf":
                     mmproj_path = config.get("mmproj_path")
                     valid_clip_path = mmproj_path if (mmproj_path and os.path.exists(mmproj_path)) else None
-                    chat_handler = None
-                    if valid_clip_path != None:
-                        chat_handler = Qwen25VLChatHandler(clip_model_path=valid_clip_path)
-                    if valid_clip_path:
-                        print(f"[VRAM Manager] Binding Vision MMProj: {valid_clip_path}")
+                    chat_handler = Qwen25VLChatHandler(clip_model_path=valid_clip_path) if valid_clip_path else None
                     chat_format = "chatml" if "qwen" in target_id or "gemma" in target_id else None
-                    print(f"[VRAM Manager] Loading GGUF Model: {config['path']}")
+                    
                     self.model = Llama(
                         model_path=config["path"],
                         clip_model_path=valid_clip_path,
@@ -297,84 +200,45 @@ class DynamicModelManager:
                         n_ctx=5000,
                         n_threads=6,
                         use_mmap=True,
-                        use_mlock=False,
-                        verbose=True
                     )
                     self.tokenizer_or_processor = None
 
+                # Backend 2: MusicGen
                 elif backend_type == "musicgen":
                     model_path = config["path"]
                     compute_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-                    print(f"[VRAM Manager] Loading MusicGen Processor & Model: {model_path}")
-                    self.tokenizer_or_processor = AutoProcessor.from_pretrained(
-                        model_path,
-                        local_files_only=os.path.exists(model_path)
-                    )
+                    self.tokenizer_or_processor = AutoProcessor.from_pretrained(model_path, local_files_only=os.path.exists(model_path))
                     self.model = MusicgenForConditionalGeneration.from_pretrained(
-                        model_path,
-                        torch_dtype=compute_dtype,
-                        local_files_only=os.path.exists(model_path)
+                        model_path, torch_dtype=compute_dtype, local_files_only=os.path.exists(model_path)
                     ).to("cuda" if torch.cuda.is_available() else "cpu").eval()
 
-                    self.compute_dtype = compute_dtype
-                    
+                # Backend 3: Safetensors (Transformers)
                 elif backend_type == "safetensors":
-                    # Determine compute dtype dynamically
                     compute_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float16
-
                     bnb_config = BitsAndBytesConfig(
                         load_in_4bit=True,
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_use_double_quant=True,
                         bnb_4bit_compute_dtype=compute_dtype
                     )
-
                     model_path = config["path"]
 
                     if config.get("supports_vision"):
-                        print(f"[VRAM Manager] Loading Vision Processor: {model_path}")
-                        self.tokenizer_or_processor = AutoProcessor.from_pretrained(
-                            model_path,
-                            trust_remote_code=True,
-                            local_files_only=os.path.exists(model_path)
-                        )
-                        
+                        self.tokenizer_or_processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True, local_files_only=os.path.exists(model_path))
                         if config.get("model_type") == "chameleon":
-                            print("[VRAM Manager] Loading Chameleon model")
                             self.model = ChameleonForConditionalGeneration.from_pretrained(
-                                model_path,
-                                quantization_config=bnb_config,
-                                device_map="auto",
-                                torch_dtype=compute_dtype,
-                                trust_remote_code=True,
-                                local_files_only=os.path.exists(model_path)
+                                model_path, quantization_config=bnb_config, device_map="auto", torch_dtype=compute_dtype, trust_remote_code=True, local_files_only=os.path.exists(model_path)
                             ).eval()
-
-                            # REMOVE: self.model.dtype = compute_dtype
-                            # DO THIS INSTEAD: Store on the manager or use a custom attribute name
-                            self.compute_dtype = compute_dtype
                     else:
-                        print(f"[VRAM Manager] Loading Tokenizer: {model_path}")
-                        self.tokenizer_or_processor = AutoTokenizer.from_pretrained(
-                            model_path,
-                            trust_remote_code=True,
-                            local_files_only=os.path.exists(model_path)
-                        )
+                        self.tokenizer_or_processor = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, local_files_only=os.path.exists(model_path))
                         self.model = AutoModelForCausalLM.from_pretrained(
-                            model_path,
-                            quantization_config=bnb_config,
-                            device_map="auto",
-                            trust_remote_code=True,
-                            local_files_only=os.path.exists(model_path)
+                            model_path, quantization_config=bnb_config, device_map="auto", trust_remote_code=True, local_files_only=os.path.exists(model_path)
                         ).eval()
-
                 else:
                     raise ValueError(f"Unsupported backend type: {backend_type}")
 
                 self.active_model_id = target_id
                 self.active_config = config
-                print(f"[VRAM Manager] Successfully loaded '{target_id}' into VRAM.")
                 return self.model, self.tokenizer_or_processor, config
 
             except Exception as e:
@@ -383,6 +247,21 @@ class DynamicModelManager:
                 raise
 
 manager = DynamicModelManager()
+
+# ==============================================================================
+# SCHEMAS & UTILITIES
+# ==============================================================================
+class LoadRequest(BaseModel):
+    session_id: str
+
+def cleanup_temp_uploads():
+    """Background task to clear temp uploads older than 30 minutes."""
+    now = time.time()
+    for f in os.listdir(TEMP_UPLOADS_DIR):
+        fpath = os.path.join(TEMP_UPLOADS_DIR, f)
+        if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > 1800:
+            try: os.remove(fpath)
+            except Exception: pass
 
 # ------------------------------------------------------------------------------
 # SCHEMAS
@@ -689,12 +568,12 @@ def perform_google_scrape(query: str, max_results: int = 3) -> str:
 # ------------------------------------------------------------------------------
 @app.get("/api/health")
 async def health_check():
+    """Returns system status and VRAM usage."""
     vram_free_gb, vram_total_gb = 0.0, 0.0
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info()
         vram_free_gb = round(free / (1024**3), 2)
         vram_total_gb = round(total / (1024**3), 2)
-
     return {
         "status": "online",
         "active_model": manager.active_model_id or "None (Idle)",
@@ -705,83 +584,146 @@ async def health_check():
 
 @app.get("/api/models")
 async def get_models():
+    """Returns the list of available models for the frontend dropdown."""
     return {"models": AVAILABLE_MODELS}
 
 @app.get("/api/sessions")
 async def list_sessions():
+    """Returns a list of saved chat sessions."""
+
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+
     files = [
-        os.path.join(SESSIONS_DIR, f) 
-        for f in os.listdir(SESSIONS_DIR) 
+        os.path.join(SESSIONS_DIR, f)
+        for f in os.listdir(SESSIONS_DIR)
         if f.endswith(".json")
     ]
-    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-    
-    # 3. Extract just the session IDs (filenames without .json)
-    sessions = [os.path.splitext(os.path.basename(f))[0] for f in files]
-    
-    return {"sessions": sessions}
+
+    files.sort(
+        key=lambda x: os.path.getmtime(x),
+        reverse=True
+    )
+
+    sessions = [
+        os.path.splitext(os.path.basename(f))[0]
+        for f in files
+    ]
+
+    return {
+        "sessions": sessions
+    }
 
 
 @app.post("/api/load_session")
 def load_session(req: LoadRequest):
+    """Loads a specific chat history by ID."""
+
     if not req.session_id or req.session_id == "No Saved Chats":
         return {"history": []}
 
-    filename = req.session_id if req.session_id.endswith(".json") else f"{req.session_id}.json"
-    path = os.path.join(SESSIONS_DIR, os.path.basename(filename))
+    session_id = os.path.basename(req.session_id)
 
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {"history": data.get("messages", data.get("history", []))}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    if not session_id.endswith(".json"):
+        session_id += ".json"
 
-    return {"history": []}
+    path = os.path.join(
+        SESSIONS_DIR,
+        session_id
+    )
+
+    if not os.path.isfile(path):
+        return {"history": []}
+
+    try:
+        with open(
+            path,
+            "r",
+            encoding="utf-8"
+        ) as f:
+            data = json.load(f)
+
+        return {
+            "history": data.get("messages", [])
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
 
 @app.get("/api/create_session")
 def new_session():
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return {"session_id": f"chat_{timestamp}.json"}
+    """Generates a new session ID based on timestamp."""
 
-@app.get("/api/summarize_prompt")
-async def summarize_prompt():
-    """Compiles all session histories into a summary prompt for the frontend."""
-    all_content = []
-    for file_name in os.listdir(SESSIONS_DIR):
-        if file_name.endswith(".json"):
-            file_path = os.path.join(SESSIONS_DIR, file_name)
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    msgs = data.get("messages", data.get("history", []))
-                    for m in msgs:
-                        all_content.append(f"{m.get('role', 'user')}: {extract_text_from_content(m.get('content', ''))}")
-            except Exception:
-                pass
-    if not all_content:
-        return {"prompt": None}
-    
-    compiled_text = "\n".join(all_content[:200])  # Cap history token length
-    return {"prompt": f"Please provide a concise summary of the following prior conversation topics:\n\n{compiled_text}"}
+    timestamp = datetime.now().strftime(
+        "%Y-%m-%d_%H-%M-%S"
+    )
+
+    return {
+        "session_id": f"chat_{timestamp}"
+    }
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Deletes a saved chat session."""
+
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Session ID is required"
+        )
+
+    # Prevent path traversal
+    session_id = os.path.basename(session_id)
+
+    if not session_id.endswith(".json"):
+        session_id += ".json"
+
+    path = os.path.join(
+        SESSIONS_DIR,
+        session_id
+    )
+
+    if not os.path.isfile(path):
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found"
+        )
+
+    try:
+        os.remove(path)
+
+        return {
+            "success": True,
+            "session_id": os.path.splitext(session_id)[0]
+        }
+
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete session: {str(e)}"
+        )
 
 @app.post("/api/clear_vram")
 async def manual_vram_clear():
+    """Manually unloads the current model from the GPU."""
     async with manager.lock:
         manager.unload_vram()
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return {"status": "success", "message": "VRAM cleared", "new_session_id": f"chat_{timestamp}.json"}
+    return {"status": "success", "message": "VRAM cleared", "new_session_id": f"chat_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"}
 
-# ------------------------------------------------------------------------------
-# STREAMING ROUTE
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# MAIN STREAMING ROUTE
+# ==============================================================================
 @app.post("/api/stream")
 async def unified_stream_chat(
     request: Request,
     background_tasks: BackgroundTasks,
     prompt: str = Form(""),
     model: str = Form("qwen"),
+    mode: str = Form("flash"),
     session_id: Optional[str] = Form(None),
     messages: Optional[str] = Form(None),
     max_tokens: int = Form(N_CTX),
@@ -789,8 +731,12 @@ async def unified_stream_chat(
     web_search: bool = Form(True),
     file: Optional[UploadFile] = File(None)
 ):
+    """
+    Core generation endpoint. Handles file uploads, OCR, audio transcription, 
+    web searches, context pruning, and streams Server-Sent Events (SSE) back to React.
+    """
     background_tasks.add_task(cleanup_temp_uploads)
-
+    mode2 = mode
     # 1. PARSE INCOMING MESSAGES
     parsed_messages = []
     if messages:

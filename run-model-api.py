@@ -60,7 +60,7 @@ app = FastAPI(
 )
 
 os.makedirs("static", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/temp_uploads", StaticFiles(directory="temp_uploads"), name="temp_uploads")
 
 class LimitUploadSizeMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, max_upload_size: int):
@@ -254,15 +254,6 @@ manager = DynamicModelManager()
 class LoadRequest(BaseModel):
     session_id: str
 
-def cleanup_temp_uploads():
-    """Background task to clear temp uploads older than 30 minutes."""
-    now = time.time()
-    for f in os.listdir(TEMP_UPLOADS_DIR):
-        fpath = os.path.join(TEMP_UPLOADS_DIR, f)
-        if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > 1800:
-            try: os.remove(fpath)
-            except Exception: pass
-
 # ------------------------------------------------------------------------------
 # SCHEMAS
 # ------------------------------------------------------------------------------
@@ -281,13 +272,13 @@ class LoadRequest(BaseModel):
 # ------------------------------------------------------------------------------
 def cleanup_temp_uploads():
     now = time.time()
-    for f in os.listdir(TEMP_UPLOADS_DIR):
-        fpath = os.path.join(TEMP_UPLOADS_DIR, f)
-        if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > 1800:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
+    # for f in os.listdir(TEMP_UPLOADS_DIR):
+    #     fpath = os.path.join(TEMP_UPLOADS_DIR, f)
+    #     if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > 1800:
+    #         try:
+    #             os.remove(fpath)
+    #         except Exception:
+    #             pass
 
 def extract_video_frames(video_path: str, max_frames: int = 8) -> List[Image.Image]:
     """Extracts evenly spaced frames from a video file."""
@@ -789,8 +780,8 @@ async def unified_stream_chat(
             
             frames = extract_video_frames(temp_path, max_frames=8)
             if not frames:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                # if os.path.exists(temp_path):
+                    #os.remove(temp_path)
                 raise HTTPException(status_code=400, detail="Could not extract frames from video file.")
 
             for frame in frames:
@@ -868,11 +859,11 @@ async def unified_stream_chat(
             audio_response = f"\n\n🎵 **Generated Track:**\n<audio controls src=\"{audio_url}\"></audio>\n\n[Download Audio]({audio_url})\n\n"
 
             yield f"data: {json.dumps({'token': audio_response})}\n\n"
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            # if temp_path and os.path.exists(temp_path):
+                #os.remove(temp_path)
 
             elapsed = round(time.time() - start_time, 2)
-            saved_id = append_and_save_chat(session_id=session_id, user_msg=user_prompt, assistant_msg=audio_response, model_used=config['name'], file_name=file.filename if file else None)
+            saved_id = append_and_save_chat(session_id=session_id, user_msg=user_prompt, assistant_msg=audio_response, model_used=config['name'], file_name=unique_filename if file else None)
             yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': 1, 'tps': 1}})}\n\n"
 
         return StreamingResponse(event_generator_music(), media_type="text/event-stream")
@@ -888,11 +879,11 @@ async def unified_stream_chat(
             markdown_image = f"\n\n![Generated Image]({image_url})\n\n"
 
             yield f"data: {json.dumps({'token': markdown_image})}\n\n"
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            # if temp_path and os.path.exists(temp_path):
+                #os.remove(temp_path)
 
             elapsed = round(time.time() - start_time, 2)
-            saved_id = append_and_save_chat(session_id=session_id, user_msg=user_prompt, assistant_msg=markdown_image, model_used=config['name'], file_name=file.filename if file else None)
+            saved_id = append_and_save_chat(session_id=session_id, user_msg=user_prompt, assistant_msg=markdown_image, model_used=config['name'], file_name=unique_filename if file else None)
             yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': 1, 'tps': 1}})}\n\n"
 
         return StreamingResponse(event_generator_image(), media_type="text/event-stream")
@@ -980,8 +971,9 @@ async def unified_stream_chat(
             except Exception as err:
                 print(f"Error during GGUF stream iteration: {err}")
             finally:
-                if temp_path and os.path.exists(temp_path):
-                    os.remove(temp_path)
+                c=0
+                # if temp_path and os.path.exists(temp_path):
+                    #os.remove(temp_path)
 
             elapsed = round(time.time() - start_time, 2)
             tps = round(token_count / elapsed, 1) if elapsed > 0 else 0
@@ -990,7 +982,7 @@ async def unified_stream_chat(
                 user_msg=user_prompt,
                 assistant_msg=full_response,
                 model_used=f"{config['name']} ({media_kind.capitalize()})",
-                file_name=file.filename if file else None
+                file_name=unique_filename if file else None
             )
             yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': token_count, 'tps': tps}})}\n\n"
 
@@ -1048,8 +1040,9 @@ async def unified_stream_chat(
                     yield f"data: {json.dumps({'token': new_text})}\n\n"
                     await asyncio.sleep(0.001)
             finally:
-                if temp_path and os.path.exists(temp_path):
-                    os.remove(temp_path)
+                c=0
+                # if temp_path and os.path.exists(temp_path):
+                    #os.remove(temp_path)
 
             elapsed = round(time.time() - start_time, 2)
             tps = round(token_count / elapsed, 1) if elapsed > 0 else 0
@@ -1058,7 +1051,7 @@ async def unified_stream_chat(
                 user_msg=user_prompt,
                 assistant_msg=full_response,
                 model_used=f"{config['name']} ({media_kind.capitalize()})",
-                file_name=file.filename if file else None
+                file_name=unique_filename if unique_filename else None
             )
             yield f"data: {json.dumps({'done': True, 'session_id': saved_id, 'metrics': {'elapsed_sec': elapsed, 'tokens': token_count, 'tps': tps}})}\n\n"
 

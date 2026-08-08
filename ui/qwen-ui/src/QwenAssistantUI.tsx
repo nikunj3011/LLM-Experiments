@@ -29,7 +29,7 @@ import "highlight.js/styles/github-dark.css";
 // CONFIGURATION & INTERFACES
 // ============================================================================
 const API_BASE = "http://127.0.0.1:8000/api";
-
+const API_ROOT = "http://127.0.0.1:8000";
 export interface ModelOption {
   id: string;
   name: string;
@@ -1792,9 +1792,25 @@ export default function QwenAssistantUI(): React.JSX.Element {
                       </div>
                     )}
 
-                    {msg.filePreview && (
+                    {(msg.filePreview || msg.fileName) && (
                       <div className="mb-3">
-                        <img src={msg.filePreview} alt="Upload" className="max-h-64 rounded-xl border border-gray-200 dark:border-gray-700 object-contain" />
+                        <img
+                          src={
+                            msg.filePreview ||
+                            `${API_ROOT}/temp_uploads/${msg.fileName}`
+                          }
+                          alt={msg.fileName || "Uploaded image"}
+                          className="
+                            max-w-full
+                            max-h-80
+                            rounded-2xl
+                            border
+                            border-gray-200
+                            dark:border-gray-700
+                            object-contain
+                            shadow-sm
+                          "
+                        />
                       </div>
                     )}
 

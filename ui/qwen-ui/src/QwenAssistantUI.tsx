@@ -78,7 +78,30 @@ export default function QwenAssistantUI(): React.JSX.Element {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+// --- New State for Navigation & Gallery ---
+  const [activeTab, setActiveTab] = useState<"chat" | "images" | "videos">("chat");
+  const [galleryImages, setGalleryImages] = useState<{filename: string, url: string}[]>([]);
+  const [galleryVideos, setGalleryVideos] = useState<{filename: string, url: string}[]>([]);
+const [selectedImage, setSelectedImage] = useState<{ filename: string; url: string } | null>(null);
+  const fetchGallery = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/gallery`);
+      if (res.ok) {
+        const data = await res.json();
+        setGalleryImages(data.images || []);
+        setGalleryVideos(data.videos || []);
+      }
+    } catch (e) {
+      console.error("Failed to fetch gallery:", e);
+    }
+  };
 
+  // Fetch gallery when the tab changes
+  useEffect(() => {
+    if (activeTab === "images" || activeTab === "videos") {
+      fetchGallery();
+    }
+  }, [activeTab]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -681,6 +704,30 @@ export default function QwenAssistantUI(): React.JSX.Element {
 
         {/* Sidebar Sessions & Chat List with scrollbar hidden via 'no-scrollbar' */}
         <nav className="flex-1 min-h-0 overflow-y-auto modern-scrollbar px-3 py-3 space-y-1">
+          {/* Navigation Tabs */}
+        <div className="px-3 my-4 space-y-1">
+          <div className="text-xs font-semibold text-gray-400 px-3 mb-2 uppercase tracking-wider">
+            Navigation
+          </div>
+          {/* <button 
+            onClick={() => setActiveTab("chat")}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ${activeTab === "chat" ? "bg-gray-200 dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 font-medium" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800/60"}`}
+          >
+            <MessageSquare size={18} /> Chat
+          </button> */}
+          <button 
+            onClick={() => setActiveTab("images")}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ${activeTab === "images" ? "bg-gray-200 dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 font-medium" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800/60"}`}
+          >
+            <LayoutGrid size={18} /> Generated Images
+          </button>
+          <button 
+            onClick={() => setActiveTab("videos")}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ${activeTab === "videos" ? "bg-gray-200 dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 font-medium" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800/60"}`}
+          >
+            <Square size={18} /> Generated Videos
+          </button>
+        </div>
           <div className="text-xs font-semibold text-gray-400 px-3 my-2 uppercase tracking-wider">
             Recent Conversations
           </div>
@@ -1654,31 +1701,69 @@ export default function QwenAssistantUI(): React.JSX.Element {
         </header>
 
         {/* --- SCROLLABLE VIEW (HOME OR CHAT) --- */}
-        <div
-          className="
-            flex-1
-            min-h-0
-            w-full
-            overflow-y-auto
-            modern-scrollbar
-            pt-20
-            pb-[230px] sm:pb-[260px] md:pb-[280px]
-            flex flex-col items-center
-          "
-        >
-          
-          {/* VIEW: HOME SCREEN (Empty State) */}
-          {!hasMessages && (
-            <div className="flex flex-col items-center justify-center h-full w-full max-w-4xl px-6 animate-in fade-in duration-500 my-auto">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-fuchsia-400 to-purple-600 shadow-[0_0_30px_rgba(168,85,247,0.5)] mb-6 animate-pulse" />
-              
-              <h1 className="text-3xl md:text-5xl font-semibold mb-2 text-center">Good Afternoon, User</h1>
-              <p className="text-3xl md:text-5xl font-semibold text-gray-400 dark:text-gray-500 mb-10 text-center">What's on your mind?</p>
+        {/* --- SCROLLABLE VIEW (ROUTING) --- */}
+        <div className="flex-1 min-h-0 w-full overflow-y-auto modern-scrollbar pt-20 pb-[230px] sm:pb-[260px] md:pb-[280px] flex flex-col items-center">
+          {activeTab === "images" ? (
+            <div className="w-full max-w-6xl mx-auto px-4 md:px-8 flex flex-col h-full">
+              <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+                <LayoutGrid /> Image Gallery
+              </h2>
+              {galleryImages.length === 0 ? (
+                <div className="text-gray-400 italic mt-10 text-center">
+                  No images generated yet. Execute a ComfyUI image workflow to see them here.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 pb-10">
+                  {galleryImages.map((img, i) => (
+                    <div
+                      key={i}
+                      onClick={() => setSelectedImage(img)}
+                      className="group relative rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 shadow-sm hover:shadow-lg transition-all cursor-pointer"
+                    >
+                      <img
+                        src={img.url}
+                        alt={img.filename}
+                        className="w-full h-auto object-cover aspect-square group-hover:scale-105 transition-transform duration-300"
+                        loading="lazy"
+                      />
+                      <div className="p-2 text-xs text-gray-500 truncate" title={img.filename}>
+                        {img.filename}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+          ) : activeTab === "videos" ? (
+            <div className="w-full max-w-6xl mx-auto px-4 md:px-8 flex flex-col h-full">
+              <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><Square /> Video Gallery</h2>
+              {galleryVideos.length === 0 ? (
+                 <div className="text-gray-400 italic mt-10 text-center">No videos generated yet. Execute a ComfyUI video workflow to see them here.</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-10">
+                  {galleryVideos.map((vid, i) => (
+                     <div key={i} className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 shadow-sm hover:shadow-md transition-shadow">
+                       <video src={vid.url} controls loop className="w-full h-auto object-cover aspect-video bg-black" />
+                       <div className="p-3 text-sm text-gray-500 truncate" title={vid.filename}>{vid.filename}</div>
+                     </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            // ==========================================
+            // EXISTING CHAT VIEW 
+            // ==========================================
+            <>
+              {!hasMessages && (
+                <div className="flex flex-col items-center justify-center h-full w-full max-w-4xl px-6 animate-in fade-in duration-500 my-auto">
+                  <div className="w-16 h-16 rounded-full bg-gradient-to-br from-fuchsia-400 to-purple-600 shadow-[0_0_30px_rgba(168,85,247,0.5)] mb-6 animate-pulse" />
+                  <h1 className="text-3xl md:text-5xl font-semibold mb-2 text-center">Good Afternoon, User</h1>
+                  <p className="text-3xl md:text-5xl font-semibold text-gray-400 dark:text-gray-500 mb-10 text-center">What's on your mind?</p>
+                </div>
+              )}
 
-          {/* VIEW: CHAT SCREEN (Messages List) */}
-          {hasMessages && (
+              {hasMessages && (
             <div
               className="
                 w-full
@@ -1989,7 +2074,10 @@ export default function QwenAssistantUI(): React.JSX.Element {
               ))}
               <div ref={chatEndRef} />
             </div>
+            )}
+            </>
           )}
+          
         </div>
 
         {/* --- FIXED BOTTOM INPUT AREA --- */}
@@ -2496,6 +2584,39 @@ export default function QwenAssistantUI(): React.JSX.Element {
                 </button>
 
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+    {/* --- IMAGE LIGHTBOX / ZOOM MODAL --- */}
+      {selectedImage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => setSelectedImage(null)} // Click background to close
+        >
+          <div
+            className="relative max-w-5xl max-h-[90vh] flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside content
+          >
+            {/* Close Button */}
+            <button
+              onClick={() => setSelectedImage(null)}
+              className="absolute -top-12 right-0 text-white/80 hover:text-white bg-black/40 hover:bg-black/70 p-2 rounded-full transition-colors"
+              title="Close (Esc)"
+            >
+              <X size={24} />
+            </button>
+
+            {/* Full Resolution Image View */}
+            <img
+              src={selectedImage.url}
+              alt={selectedImage.filename}
+              className="max-h-[80vh] w-auto max-w-full rounded-lg shadow-2xl object-contain cursor-zoom-in"
+            />
+
+            {/* Image Filename Footer */}
+            <div className="mt-3 px-4 py-1.5 bg-black/60 rounded-full text-xs text-gray-200 backdrop-blur-md">
+              {selectedImage.filename}
             </div>
           </div>
         </div>

@@ -35,6 +35,16 @@ import requests
 from bs4 import BeautifulSoup
 import torchaudio
 
+
+import asyncio
+import json
+import time
+import uuid
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from threading import Thread
+from transformers import TextIteratorStreamer
+
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -45,8 +55,9 @@ from transformers import (
     TextIteratorStreamer
 )
 
-from llama_cpp import Llama
+from llama_cpp import Llama, Union
 from starlette.middleware.base import BaseHTTPMiddleware
+MODEL_LOAD_LOCK = asyncio.Lock()
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -61,7 +72,8 @@ app = FastAPI(
 
 os.makedirs("static", exist_ok=True)
 app.mount("/temp_uploads", StaticFiles(directory="temp_uploads"), name="temp_uploads")
-
+COMFYUI_OUTPUT_DIR = Path(r"D:\Comfy-Desktop\ComfyUI-Shared\output\2")
+app.mount("/comfy_media", StaticFiles(directory=str(COMFYUI_OUTPUT_DIR)), name="comfy_media")
 class LimitUploadSizeMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, max_upload_size: int):
         super().__init__(app)
@@ -85,6 +97,7 @@ app.add_middleware(
 
 SESSIONS_DIR = "./chat_history"
 TEMP_UPLOADS_DIR = "./temp_uploads"
+COMFYUI_URL = r"D:\Comfy-Desktop\ComfyUI-Shared\output"
 SYSTEM_PROMPT = "You are a pro in all fields especially in coding, an AI assistant."
 CONFIG_PATH = Path("config.json")
 N_CTX = 5120
@@ -98,6 +111,7 @@ except FileNotFoundError:
     # Fallback if the file is missing
     SYSTEM_PROMPT = "You are a pro in all fields especially in coding, an AI assistant."
     print(f"Warning: {file_path} not found. Using default prompt.")
+SYSTEM_PROMPT = "You are a pro in all fields especially in coding, an AI assistant."
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
@@ -113,6 +127,21 @@ def load_models_from_config(config_file: Path) -> List[Dict[str, Any]]:
         data = json.load(f)
         return data.get("AVAILABLE_MODELS", [])
     
+# ------------------------------------------------------------------------------
+# OPENAI COMPATIBILITY SCHEMAS FOR HERMES AGENT
+# ------------------------------------------------------------------------------
+class OpenAIMessage(BaseModel):
+    role: str
+    content: Any
+
+class OpenAICompletionRequest(BaseModel):
+    model: str
+    messages: List[OpenAIMessage]
+    max_tokens: Optional[int] = 65536,
+    temperature: Optional[float] = 0.7
+    stream: Optional[bool] = False
+    top_p: Optional[float] = 0.9
+
 # ------------------------------------------------------------------------------
 # DYNAMIC MODEL REGISTRY
 # ------------------------------------------------------------------------------
@@ -186,6 +215,7 @@ class DynamicModelManager:
             try:
                 # Backend 1: GGUF (llama.cpp)
                 if backend_type == "gguf":
+                    
                     mmproj_path = config.get("mmproj_path")
                     valid_clip_path = mmproj_path if (mmproj_path and os.path.exists(mmproj_path)) else None
                     chat_handler = Qwen25VLChatHandler(clip_model_path=valid_clip_path) if valid_clip_path else None
@@ -199,7 +229,7 @@ class DynamicModelManager:
                         n_gpu_layers=20,  
                         n_ctx=5000,
                         n_threads=6,
-                        use_mmap=True,
+                        use_mmap=True,verbose=False,
                     )
                     self.tokenizer_or_processor = None
 
@@ -324,11 +354,13 @@ def extract_text_from_content(content: Any) -> str:
 def fit_messages_to_context(
     messages: list[dict],
     tokenizer_or_model,
-    max_context_limit: int = 4096,
-    max_generation_tokens: int = 2048,
+    max_context_limit: int = 60000,
+    max_generation_tokens: int = 10000,
     safety_buffer: int = 64
 ) -> list[dict]:
     """Prunes older chat history messages to ensure total context fits within limits."""
+    max_context_limit = 60000
+    max_generation_tokens = 10000
     budget = max_context_limit - max_generation_tokens - safety_buffer
     
     # Helper to count tokens roughly or precisely
@@ -406,6 +438,60 @@ def append_and_save_chat(
         logger.error(f"Error saving session file {filepath}: {e}")
     
     return session_id
+
+def process_image_attachment(img_data: str) -> Image.Image:
+    """Decodes base64 data URIs or loads image URLs into PIL Image objects."""
+    if img_data.startswith("data:image"):
+        header, base64_str = img_data.split(",", 1)
+        image_bytes = base64.b64decode(base64_str)
+        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    elif img_data.startswith("http"):
+        import requests
+        response = requests.get(img_data, stream=True)
+        return Image.open(response.raw).convert("RGB")
+    else:
+        # Raw base64 string fallback
+        image_bytes = base64.b64decode(img_data)
+        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+def parse_message_content_multimodal(content):
+    """
+    Parses OpenAI-format message content.
+    Returns:
+      - text_str: Consolidated text prompt
+      - pil_images: List of PIL Image objects
+      - raw_content_blocks: Formatted structure for vision processors
+    """
+    if isinstance(content, str):
+        return content, [], [{"type": "text", "text": content}]
+
+    text_parts = []
+    pil_images = []
+    raw_content_blocks = []
+
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+
+            if part_type == "text":
+                text_val = part.get("text", "")
+                text_parts.append(text_val)
+                raw_content_blocks.append({"type": "text", "text": text_val})
+
+            elif part_type == "image_url":
+                img_info = part.get("image_url", {})
+                url_or_b64 = img_info.get("url") if isinstance(img_info, dict) else img_info
+                if url_or_b64:
+                    try:
+                        pil_img = process_image_attachment(url_or_b64)
+                        pil_images.append(pil_img)
+                        raw_content_blocks.append({"type": "image", "image": pil_img})
+                    except Exception as e:
+                        print(f"Error processing image: {e}")
+
+    return "\n".join(text_parts), pil_images, raw_content_blocks
 
 async def process_uploaded_file(file_path: str):
     ext = Path(file_path).suffix.lower()
@@ -697,6 +783,50 @@ async def delete_session(session_id: str):
             status_code=500,
             detail=f"Failed to delete session: {str(e)}"
         )
+    
+def parse_message_content(content: Union[str, List[Dict[str, Any]]]):
+    """
+    Extracts text content and captures any multimodal attachments 
+    (images, files, audio) passed in OpenAI API format.
+    """
+    text_parts = []
+    attachments = []
+
+    if isinstance(content, str):
+        return content, attachments
+
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+
+            part_type = part.get("type")
+
+            if part_type == "text":
+                text_parts.append(part.get("text", ""))
+
+            elif part_type == "image_url":
+                img_data = part.get("image_url", {})
+                url = img_data.get("url") if isinstance(img_data, dict) else img_data
+                attachments.append({"type": "image", "url_or_base64": url})
+
+            elif part_type == "file":
+                file_info = part.get("file", {})
+                attachments.append({
+                    "type": "file",
+                    "filename": file_info.get("filename"),
+                    "file_data": file_info.get("file_data") or file_info.get("url")
+                })
+
+            elif part_type == "input_audio":
+                audio_info = part.get("input_audio", {})
+                attachments.append({
+                    "type": "audio",
+                    "format": audio_info.get("format"),
+                    "data": audio_info.get("data")
+                })
+
+    return "\n".join(text_parts), attachments
 
 @app.post("/api/clear_vram")
 async def manual_vram_clear():
@@ -705,6 +835,425 @@ async def manual_vram_clear():
         manager.unload_vram()
     return {"status": "success", "message": "VRAM cleared", "new_session_id": f"chat_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"}
 
+@app.post("/api/comfyui/execute")
+async def execute_comfyui_workflow(
+    workflow: str = Form(...),
+    files: List[UploadFile] = File(None)
+):
+    """
+    Executes a ComfyUI workflow.
+    Takes a JSON string of the API-format workflow.
+    Optionally accepts files which will be uploaded to ComfyUI's input folder.
+    """
+    try:
+        workflow_data = json.loads(workflow)
+        
+        # 1. Upload any provided files to ComfyUI
+        uploaded_assets = []
+        if files:
+            for f in files:
+                if f.filename:
+                    content = await f.read()
+                    res = await asyncio.to_thread(
+                        requests.post,
+                        f"{COMFYUI_URL}/upload/image",
+                        files={"image": (f.filename, content, f.content_type)}
+                    )
+                    if res.status_code == 200:
+                        uploaded_assets.append(res.json().get("name"))
+        
+        # 2. Queue the workflow
+        prompt_payload = {"prompt": workflow_data}
+        queue_res = await asyncio.to_thread(
+            requests.post, 
+            f"{COMFYUI_URL}/prompt", 
+            json=prompt_payload
+        )
+        if queue_res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"ComfyUI Error: {queue_res.text}")
+            
+        prompt_id = queue_res.json().get("prompt_id")
+        
+        # 3. Poll for completion (Wait until it appears in history)
+        history_url = f"{COMFYUI_URL}/history/{prompt_id}"
+        outputs = {}
+        while True:
+            hist_res = await asyncio.to_thread(requests.get, history_url)
+            if hist_res.status_code == 200:
+                hist_data = hist_res.json()
+                if prompt_id in hist_data:
+                    outputs = hist_data[prompt_id].get("outputs", {})
+                    break
+            await asyncio.sleep(1.5)
+            
+        # 4. Fetch the generated outputs and save them locally
+        generated_media = []
+        os.makedirs("static/outputs", exist_ok=True)
+        
+        for node_id, node_output in outputs.items():
+            # Handle Images
+            if "images" in node_output:
+                for img in node_output["images"]:
+                    filename = img["filename"]
+                    subfolder = img.get("subfolder", "")
+                    folder_type = img.get("type", "output")
+                    
+                    dl_url = f"{COMFYUI_URL}/view?filename={urllib.parse.quote(filename)}&subfolder={urllib.parse.quote(subfolder)}&type={folder_type}"
+                    img_data = await asyncio.to_thread(requests.get, dl_url)
+                    
+                    local_path = os.path.join("static/outputs", f"comfy_{filename}")
+                    with open(local_path, "wb") as lf:
+                        lf.write(img_data.content)
+                        
+                    generated_media.append({
+                        "url": f"http://127.0.0.1:8000/static/outputs/comfy_{filename}",
+                        "type": "image",
+                        "filename": f"comfy_{filename}"
+                    })
+            
+            # Handle Videos / Gifs
+            if "gifs" in node_output:
+                for video in node_output["gifs"]:
+                    filename = video["filename"]
+                    subfolder = video.get("subfolder", "")
+                    folder_type = video.get("type", "output")
+                    
+                    dl_url = f"{COMFYUI_URL}/view?filename={urllib.parse.quote(filename)}&subfolder={urllib.parse.quote(subfolder)}&type={folder_type}"
+                    vid_data = await asyncio.to_thread(requests.get, dl_url)
+                    
+                    local_path = os.path.join("static/outputs", f"comfy_{filename}")
+                    with open(local_path, "wb") as lf:
+                        lf.write(vid_data.content)
+                        
+                    generated_media.append({
+                        "url": f"http://127.0.0.1:8000/static/outputs/comfy_{filename}",
+                        "type": "video",
+                        "filename": f"comfy_{filename}"
+                    })
+
+        return {"status": "success", "media": generated_media, "uploaded_assets": uploaded_assets}
+
+    except Exception as e:
+        logger.error(f"ComfyUI Execution Failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/gallery")
+async def get_gallery():
+    """Returns a list of all locally saved images and videos recursively from ComfyUI output dir."""
+    if not COMFYUI_OUTPUT_DIR.exists():
+        return {"images": [], "videos": []}
+
+    image_items = []
+    video_items = []
+
+    # rglob("*") recursively searches the main folder and all subfolders (e.g., /video)
+    for file in COMFYUI_OUTPUT_DIR.rglob("*"):
+        if file.is_file():
+            ext = file.suffix.lower()
+            
+            # Calculate path relative to output dir to construct correct URL path
+            rel_path = file.relative_to(COMFYUI_OUTPUT_DIR).as_posix()
+            url = f"http://127.0.0.1:8000/comfy_media/{rel_path}"
+
+            try:
+                mtime = file.stat().st_mtime
+            except OSError:
+                mtime = 0
+
+            item = {
+                "filename": file.name,
+                "url": url,
+                "mtime": mtime
+            }
+
+            if ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]:
+                image_items.append(item)
+            elif ext in [".mp4", ".webm", ".avi", ".mkv"]:
+                video_items.append(item)
+
+    # Sort using stored modification time safely
+    image_items.sort(key=lambda x: x["mtime"], reverse=True)
+    video_items.sort(key=lambda x: x["mtime"], reverse=True)
+
+    # Clean up response payload by removing internal mtime key
+    for item in image_items + video_items:
+        item.pop("mtime", None)
+
+    return {"images": image_items, "videos": video_items}
+
+# ------------------------------------------------------------------------------
+# HERMES AGENT / OPENAI COMPATIBLE ENDPOINTS
+# ------------------------------------------------------------------------------
+@app.get("/v1/models")
+async def openai_get_models():
+    """Lists models in OpenAI-compatible format for Hermes Agent model discovery."""
+    model_list = []
+    for m in AVAILABLE_MODELS:
+        model_list.append({
+            "id": m["id"],
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "custom-server",
+            "max_model_len": 65536,      # Added context window length
+            "context_length": 65536       # Added context window length
+        })
+    return {"object": "list", "data": model_list}
+
+@app.get("/version")
+async def get_version():
+    return {"version": "1.0.0", "status": "ok"}
+
+@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(req: OpenAICompletionRequest, request: Request):
+    """OpenAI-compatible Chat Completions endpoint for Hermes Agent (Text & Vision)."""
+    if MODEL_LOAD_LOCK.locked():
+        raise HTTPException(
+            status_code=503,
+            detail="Server is currently busy loading a model or processing another request. Please try again later."
+        )
+
+    # 1. Thread-safe model loading
+    async with MODEL_LOAD_LOCK:
+        user_and_assistant_msgs = [msg for msg in req.messages if msg.role != "system"]
+        model_id = req.model
+        loaded_model, tokenizer_or_processor, config = await manager.load_model_by_config(model_id)
+        backend_type = config.get("backend_type")
+
+        # 2. Build structured messages (retaining image metadata for vision models)
+        unified_messages = []
+        collected_pil_images = []
+
+        if SYSTEM_PROMPT:
+            unified_messages.append({"role": "system", "content": SYSTEM_PROMPT})
+
+        for msg in user_and_assistant_msgs:
+            text_content, pil_imgs, formatted_blocks = parse_message_content_multimodal(msg.content)
+            collected_pil_images.extend(pil_imgs)
+
+            # For Vision-capable Safetensors/Hugging Face processors, pass formatted blocks
+            if backend_type != "gguf" and hasattr(tokenizer_or_processor, "image_processor"):
+                unified_messages.append({
+                    "role": msg.role,
+                    "content": formatted_blocks
+                })
+            else:
+                # Text-fallback for standard text/chatml templates
+                unified_messages.append({
+                    "role": msg.role,
+                    "content": text_content
+                })
+
+        max_gen_tokens = 5000
+
+        # 3. Context Pruning
+        unified_messages = fit_messages_to_context(
+            messages=unified_messages,
+            tokenizer_or_model=tokenizer_or_processor if backend_type != "gguf" else loaded_model,
+            max_context_limit=N_CTX,
+            max_generation_tokens=max_gen_tokens
+        )
+
+        created_timestamp = int(time.time())
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+        # --------------------------------------------------------------------------
+        # 4. GGUF PROMPT SAFEGUARD & BOUNDARY CALCULATION
+        # --------------------------------------------------------------------------
+        raw_prompt = ""
+        if backend_type == "gguf":
+            if hasattr(loaded_model, "reset"):
+                loaded_model.reset()
+
+            if hasattr(tokenizer_or_processor, "apply_chat_template") and tokenizer_or_processor is not None:
+                raw_prompt = tokenizer_or_processor.apply_chat_template(
+                    unified_messages, tokenize=False, add_generation_prompt=True
+                )
+            else:
+                for m in unified_messages:
+                    content_str = m['content'] if isinstance(m['content'], str) else str(m['content'])
+                    raw_prompt += f"<|im_start|>{m['role']}\n{content_str}<|im_end|>\n"
+                raw_prompt += "<|im_start|>assistant\n"
+
+            prompt_tokens = loaded_model.tokenize(raw_prompt.encode("utf-8"))
+            num_prompt_tokens = len(prompt_tokens)
+
+            available_ctx = N_CTX - num_prompt_tokens - 16
+            if available_ctx <= 0:
+                prompt_tokens = prompt_tokens[-(N_CTX - 512):]
+                raw_prompt = loaded_model.detokenize(prompt_tokens).decode("utf-8", errors="ignore")
+                max_gen_tokens = 256
+            else:
+                max_gen_tokens = min(max_gen_tokens, available_ctx)
+
+        # --------------------------------------------------------------------------
+        # 5. STREAMING RESPONSE (SSE)
+        # --------------------------------------------------------------------------
+        if req.stream:
+            async def openai_stream_generator():
+                if backend_type == "gguf":
+                    stream = await asyncio.to_thread(
+                        loaded_model.create_completion,
+                        prompt=raw_prompt,
+                        max_tokens=max_gen_tokens,
+                        temperature=req.temperature if req.temperature is not None else 0.7,
+                        top_p=req.top_p if req.top_p is not None else 0.9,
+                        stop=["<|im_end|>", "<|endoftext|>", "<|im_start|>"],
+                        stream=True
+                    )
+
+                    for chunk in stream:
+                        if await request.is_disconnected():
+                            break
+
+                        token = ""
+                        if "choices" in chunk and len(chunk["choices"]) > 0:
+                            token = chunk["choices"][0].get("text", "")
+
+                        if token:
+                            chunk_payload = {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_timestamp,
+                                "model": model_id,
+                                "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}]
+                            }
+                            yield f"data: {json.dumps(chunk_payload)}\n\n"
+                            await asyncio.sleep(0.001)
+
+                else:  # SAFETENSORS / TRANSFORMERS BACKEND
+                    processor_or_tokenizer = tokenizer_or_processor
+
+                    # Check if model utilizes a Vision Processor (e.g. Qwen2-VL, LLaVA, Gemma-Vision)
+                    if hasattr(processor_or_tokenizer, "image_processor") or hasattr(processor_or_tokenizer, "feature_extractor"):
+                        formatted_prompt = processor_or_tokenizer.apply_chat_template(
+                            unified_messages, tokenize=False, add_generation_prompt=True
+                        )
+                        inputs = processor_or_tokenizer(
+                            text=[formatted_prompt],
+                            images=collected_pil_images if collected_pil_images else None,
+                            return_tensors="pt",
+                            padding=True
+                        ).to(loaded_model.device)
+                        tokenizer = getattr(processor_or_tokenizer, "tokenizer", processor_or_tokenizer)
+                    else:
+                        formatted_input = processor_or_tokenizer.apply_chat_template(
+                            unified_messages, tokenize=False, add_generation_prompt=True
+                        )
+                        inputs = processor_or_tokenizer([formatted_input], return_tensors="pt").to(loaded_model.device)
+                        tokenizer = processor_or_tokenizer
+
+                    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+                    temp_val = req.temperature if req.temperature is not None else 0.7
+                    do_sample_flag = temp_val > 0
+
+                    gen_kwargs = dict(
+                        **inputs,
+                        streamer=streamer,
+                        max_new_tokens=max_gen_tokens,
+                        temperature=temp_val if do_sample_flag else None,
+                        top_p=req.top_p if (do_sample_flag and req.top_p) else None,
+                        do_sample=do_sample_flag
+                    )
+                    gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
+
+                    Thread(target=loaded_model.generate, kwargs=gen_kwargs).start()
+
+                    for new_text in streamer:
+                        if await request.is_disconnected():
+                            break
+                        chunk_payload = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_timestamp,
+                            "model": model_id,
+                            "choices": [{"index": 0, "delta": {"content": new_text}, "finish_reason": None}]
+                        }
+                        yield f"data: {json.dumps(chunk_payload)}\n\n"
+                        await asyncio.sleep(0.001)
+
+                # Terminal SSE payloads
+                stop_payload = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_timestamp,
+                    "model": model_id,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                }
+                yield f"data: {json.dumps(stop_payload)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(openai_stream_generator(), media_type="text/event-stream")
+
+        # --------------------------------------------------------------------------
+        # 6. NON-STREAMING RESPONSE
+        # --------------------------------------------------------------------------
+        else:
+            full_response = ""
+            if backend_type == "gguf":
+                res = await asyncio.to_thread(
+                    loaded_model.create_completion,
+                    prompt=raw_prompt,
+                    max_tokens=max_gen_tokens,
+                    temperature=req.temperature if req.temperature is not None else 0.7,
+                    top_p=req.top_p if req.top_p is not None else 0.9,
+                    stop=["<|im_end|>", "<|endoftext|>", "<|im_start|>"],
+                    stream=False
+                )
+                full_response = res["choices"][0]["text"]
+
+            else:  # SAFETENSORS BACKEND
+                processor_or_tokenizer = tokenizer_or_processor
+
+                if hasattr(processor_or_tokenizer, "image_processor") or hasattr(processor_or_tokenizer, "feature_extractor"):
+                    formatted_prompt = processor_or_tokenizer.apply_chat_template(
+                        unified_messages, tokenize=False, add_generation_prompt=True
+                    )
+                    inputs = processor_or_tokenizer(
+                        text=[formatted_prompt],
+                        images=collected_pil_images if collected_pil_images else None,
+                        return_tensors="pt",
+                        padding=True
+                    ).to(loaded_model.device)
+                    tokenizer = getattr(processor_or_tokenizer, "tokenizer", processor_or_tokenizer)
+                else:
+                    formatted_input = processor_or_tokenizer.apply_chat_template(
+                        unified_messages, tokenize=False, add_generation_prompt=True
+                    )
+                    inputs = processor_or_tokenizer([formatted_input], return_tensors="pt").to(loaded_model.device)
+                    tokenizer = processor_or_tokenizer
+
+                temp_val = req.temperature if req.temperature is not None else 0.7
+                do_sample_flag = temp_val > 0
+
+                gen_kwargs = dict(
+                    **inputs,
+                    max_new_tokens=max_gen_tokens,
+                    temperature=temp_val if do_sample_flag else None,
+                    top_p=req.top_p if (do_sample_flag and req.top_p) else None,
+                    do_sample=do_sample_flag
+                )
+                gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
+
+                output_tokens = loaded_model.generate(**gen_kwargs)
+                full_response = tokenizer.decode(
+                    output_tokens[0][inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True
+                )
+
+            return {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created_timestamp,
+                "model": model_id,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": full_response},
+                    "finish_reason": "stop"
+                }]
+            }
+        
 # ==============================================================================
 # MAIN STREAMING ROUTE
 # ==============================================================================

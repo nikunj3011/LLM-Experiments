@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "highlight.js/styles/github-dark.css";
 :root {
   --text: #6b6375;
   --text-h: #08060d;
@@ -67,7 +68,33 @@
 
 body {
   margin: 0;
+  min-width: 320px;
 }
+
+.chat-markdown { line-height: 1.7; }
+.chat-markdown > :not(:last-child) { margin-bottom: .8rem; }
+.chat-markdown pre { overflow-x: auto; border-radius: .75rem; }
+.chat-markdown code { font-size: .85em; }
+.chat-markdown :not(pre) > code { background: rgb(226 232 240); color: rgb(51 65 85); }
+.dark .chat-markdown :not(pre) > code { background: rgb(30 41 59); color: rgb(226 232 240); }
+
+/* Consistent, unobtrusive scrollbars for the conversation and navigation panes. */
+.app-scrollbar { scrollbar-width: thin; scrollbar-color: rgb(165 180 252 / .75) transparent; }
+.app-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+.app-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.app-scrollbar::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgb(148 163 184 / .5); background-clip: padding-box; }
+.app-scrollbar::-webkit-scrollbar-thumb:hover { background: rgb(99 102 241 / .8); background-clip: padding-box; }
+.dark .app-scrollbar { scrollbar-color: rgb(129 140 248 / .7) transparent; }
+.dark .app-scrollbar::-webkit-scrollbar-thumb { background: rgb(100 116 139 / .65); background-clip: padding-box; }
+
+/* Preserve the same refined scrollbar treatment for every independently scrolling panel. */
+* { scrollbar-width: thin; scrollbar-color: rgb(165 180 252 / .75) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgb(148 163 184 / .5); background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: rgb(99 102 241 / .8); background-clip: padding-box; }
+.dark * { scrollbar-color: rgb(129 140 248 / .7) transparent; }
+.dark *::-webkit-scrollbar-thumb { background: rgb(100 116 139 / .65); background-clip: padding-box; }
 
 h1,
 h2 {

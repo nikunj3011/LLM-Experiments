@@ -88,3 +88,8 @@ config.json
 models.txt
 system_prompt.md
 temp_uploads
+comfy-ui-generator/g.txt
+comfy-ui-generator/prompts.json
+output
+comfy-ui-generator/fonts
+comfy-ui-generator/preprocessed_temp

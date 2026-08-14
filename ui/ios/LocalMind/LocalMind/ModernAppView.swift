@@ -17,12 +17,14 @@ struct ModernAppView: View {
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Button { withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { isDrawerOpen = true } } label: {
-                                Image(systemName: "line.3.horizontal").font(.headline).frame(width: 42, height: 42).background(.thinMaterial, in: Circle())
+                                // Keep the navigation controls visually weightless: the content owns the glass,
+                                // rather than placing opaque material circles over the page background.
+                                Image(systemName: "line.3.horizontal").font(.headline).frame(width: 42, height: 42)
                             }
                         }
                         ToolbarItem(placement: .topBarTrailing) {
                             Menu { Picker("Model", selection: $store.selectedModelID) { ForEach(store.models) { Text($0.name).tag($0.id) } } } label: {
-                                Image(systemName: "cpu").font(.headline).frame(width: 42, height: 42).background(.thinMaterial, in: Circle())
+                                Image(systemName: "cpu").font(.headline).frame(width: 42, height: 42)
                             }
                         }
                     }
@@ -180,36 +182,52 @@ private struct ModernBottomNavigation: View {
     @Namespace private var glassNamespace
     @Namespace private var selectionNamespace
     var body: some View {
-        GlassEffectContainer(spacing: 14) {
-            HStack(spacing: 12) {
-                Group {
-                    if isExpanded {
-                        HStack(spacing: 0) { tab(.chat, "Home", "house.fill"); tab(.library, "Library", "square.grid.2x2.fill"); tab(.settings, "You", "person.crop.circle.fill") }
-                            .padding(5).frame(width: 250, height: 52)
-                            .glassEffect(.regular.tint(.indigo.opacity(0.14)).interactive(), in: Capsule())
-                            .glassEffectID("navigation", in: glassNamespace)
-                            .transition(.scale(scale: 0.55, anchor: .leading).combined(with: .opacity))
-                    } else {
-                        Button { withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { isExpanded = true } } label: { Image(systemName: "house.fill").frame(width: 52, height: 52) }
-                            .buttonStyle(.plain)
-                            .glassEffect(.regular.tint(.indigo.opacity(0.14)).interactive(), in: Circle())
-                            .glassEffectID("navigation", in: glassNamespace)
-                            .transition(.scale.combined(with: .opacity))
+        // A shared glass identity lets iOS morph the compact control into the full tab bar.
+        // The spring is deliberately under-damped enough to feel responsive without growing the bar.
+        GlassEffectContainer(spacing: 0) {
+            if isExpanded {
+                HStack(spacing: 0) {
+                    tab(.chat, "Home", "house.fill")
+                    tab(.library, "Library", "square.grid.2x2.fill")
+                    tab(.settings, "Settings", "gearshape.fill")
+                }
+                .padding(5)
+                .frame(width: 274, height: 54)
+                .glassEffect(.regular.tint(.indigo.opacity(0.08)).interactive(), in: Capsule())
+                .glassEffectID("bottom-navigation", in: glassNamespace)
+                .transition(.scale(scale: 0.72, anchor: .leading).combined(with: .opacity))
+            } else {
+                HStack(spacing: 0) {
+                    Button {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.76)) { isExpanded = true }
+                    } label: {
+                        Image(systemName: "house.fill").frame(width: 52, height: 52)
                     }
+                    .buttonStyle(.plain)
+
+                    Divider().frame(height: 22).opacity(0.35)
+
+                    // Settings remains directly reachable without requiring expansion.
+                    Button {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { page = .settings }
+                    } label: {
+                        Image(systemName: "gearshape.fill").frame(width: 52, height: 52)
+                    }
+                    .buttonStyle(.plain)
                 }
-                // Settings is always one tap away, even while the navigation is collapsed.
-                Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { page = .settings } } label: {
-                    Image(systemName: "gearshape.fill").frame(width: 52, height: 52)
-                }
-                .buttonStyle(.plain)
-                .glassEffect(.regular.tint(.indigo.opacity(0.10)).interactive(), in: Circle())
+                .padding(2)
+                .frame(width: 108, height: 54)
+                .glassEffect(.regular.tint(.indigo.opacity(0.08)).interactive(), in: Capsule())
+                .glassEffectID("bottom-navigation", in: glassNamespace)
+                .transition(.scale(scale: 0.72, anchor: .leading).combined(with: .opacity))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 28)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .contentShape(Capsule())
         .sensoryFeedback(.selection, trigger: isExpanded)
     }
     
-    private func tab(_ item: ModernPage, _ title: String, _ icon: String) -> some View { Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { page = item; if item == .chat { isExpanded = false } } } label: { VStack(spacing: 3) { ZStack { if page == item { Capsule().fill(.primary.opacity(0.18)).matchedGeometryEffect(id: "selected", in: selectionNamespace) }; Image(systemName: icon) }.frame(height: 26); Text(title).font(.caption2.weight(.semibold)) }.frame(maxWidth: .infinity, maxHeight: .infinity).foregroundStyle(page == item ? .primary : .secondary) }.buttonStyle(.plain) }
+    private func tab(_ item: ModernPage, _ title: String, _ icon: String) -> some View { Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { page = item; if item == .chat { isExpanded = false } } } label: { VStack(spacing: 3) { ZStack { if page == item { Capsule().fill(.primary.opacity(0.14)).matchedGeometryEffect(id: "selected", in: selectionNamespace) }; Image(systemName: icon) }.frame(height: 26); Text(title).font(.caption2.weight(.semibold)) }.frame(maxWidth: .infinity, maxHeight: .infinity).foregroundStyle(page == item ? .primary : .secondary) }.buttonStyle(.plain) }
 }
 
 private struct ModernLibrary: View { @Bindable var store: WorkspaceStore; var body: some View { ContentUnavailableView("Your library", systemImage: "square.grid.2x2", description: Text("Images and files created by your local workspace appear here.")) } }

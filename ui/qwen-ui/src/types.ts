@@ -23,3 +23,13 @@ export interface GalleryAsset {
   filename: string;
   url: string;
 }
+
+export type CreativeKind = "image" | "video" | "audio";
+
+export interface AgentConnection {
+  id: string;
+  name: string;
+  detail: string;
+  status: "connected" | "ready" | "offline";
+  icon: string;
+}

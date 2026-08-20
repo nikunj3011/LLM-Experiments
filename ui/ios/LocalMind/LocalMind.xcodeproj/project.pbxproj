@@ -29,9 +29,22 @@
 		E2BE3C78302F745500E8008D /* LocalMindUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LocalMindUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E22A1E89303786D9003EA2CA /* Exceptions for "LocalMind" folder in "LocalMind" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E2BE3C60302F745200E8008D /* LocalMind */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E2BE3C63302F745200E8008D /* LocalMind */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E22A1E89303786D9003EA2CA /* Exceptions for "LocalMind" folder in "LocalMind" target */,
+			);
 			path = LocalMind;
 			sourceTree = "<group>";
 		};
@@ -400,8 +413,11 @@
 				DEVELOPMENT_TEAM = 3Z4CU5KRK7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LocalMind/Info.plist;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "LocalMind uses the camera to attach photos and videos to your private chat.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "LocalMind connects to your local AI runtime on your network.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "LocalMind uses the microphone when recording a video attachment.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -434,8 +450,11 @@
 				DEVELOPMENT_TEAM = 3Z4CU5KRK7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LocalMind/Info.plist;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "LocalMind uses the camera to attach photos and videos to your private chat.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "LocalMind connects to your local AI runtime on your network.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "LocalMind uses the microphone when recording a video attachment.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

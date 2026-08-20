@@ -7,8 +7,32 @@ enum AppDestination: String, CaseIterable, Hashable, Identifiable { case chat, i
 enum GenerationMode: String, CaseIterable, Identifiable, Codable { case flash, thinking; var id: String { rawValue }; var title: String { self == .flash ? "Flash" : "Think" } }
 enum MessageRole: String, Codable { case user, assistant, system }
 enum MessageStatus: String, Codable { case sending, streaming, complete, failed }
-struct ChatMessage: Identifiable, Codable, Equatable { var id = UUID(); let role: MessageRole; var content: String; var fileName: String?; var modelUsed: String?; var modeUsed: GenerationMode?; var status: MessageStatus = .complete }
-struct ChatAttachment: Equatable { let url: URL; let name: String }
+enum AttachmentKind: String, Codable { case image, video, document
+    static func infer(from url: URL) -> AttachmentKind {
+        let imageExtensions = ["jpg", "jpeg", "png", "gif", "heic", "webp"]
+        let videoExtensions = ["mov", "mp4", "m4v", "avi"]
+        if imageExtensions.contains(url.pathExtension.lowercased()) { return .image }
+        if videoExtensions.contains(url.pathExtension.lowercased()) { return .video }
+        return .document
+    }
+}
+struct ChatMessage: Identifiable, Codable, Equatable { var id = UUID(); let role: MessageRole; var content: String; var fileName: String?; var attachmentPath: String? = nil; var attachmentKind: AttachmentKind? = nil; var modelUsed: String?; var modeUsed: GenerationMode?; var status: MessageStatus = .complete }
+/// A locally cached copy remains readable after the Files/Photos security scope has ended.
+struct ChatAttachment: Equatable {
+    let url: URL; let name: String; let kind: AttachmentKind
+    static func cache(_ source: URL) throws -> ChatAttachment {
+        let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ChatAttachments", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(source.lastPathComponent)")
+        let accessed = source.startAccessingSecurityScopedResource(); defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+        try FileManager.default.copyItem(at: source, to: destination)
+        return ChatAttachment(url: destination, name: source.lastPathComponent, kind: AttachmentKind.infer(from: source))
+    }
+    static func cachedPath(for name: String?) -> String? {
+        guard let name, let directory = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false), let files = try? FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("ChatAttachments"), includingPropertiesForKeys: nil) else { return nil }
+        return files.first { $0.lastPathComponent.hasSuffix("-\(name)") }?.path
+    }
+}
 struct AIModel: Identifiable, Codable, Hashable { let id: String; let name: String }
 struct ChatSession: Identifiable, Hashable { let id: String; let title: String }
 struct GalleryAsset: Identifiable, Decodable { let filename: String; let url: URL; var id: String { url.absoluteString } }
@@ -44,7 +68,7 @@ struct GalleryAsset: Identifiable, Decodable { let filename: String; let url: UR
     func deleteSessions(at offsets: IndexSet) async { for index in offsets { do { try await api.deleteSession(sessions[index].id, baseURL: apiBaseURL) } catch { report(error) } }; await refresh() }
     func clearVRAM() async { do { try await api.clearVRAM(baseURL: apiBaseURL) } catch { report(error) } }
     func refreshGallery() async { do { gallery = try await api.gallery(baseURL: apiBaseURL) } catch { report(error) } }
-    func send(prompt: String, attachment: ChatAttachment?) async { guard !isGenerating else { return }; let user = ChatMessage(role: .user, content: prompt, fileName: attachment?.name, modelUsed: selectedModelID, modeUsed: generationMode, status: .sending); let assistant = ChatMessage(role: .assistant, content: "", modelUsed: selectedModelID, modeUsed: generationMode, status: .streaming); messages += [user, assistant]; isGenerating = true; let history = messages.dropLast().map { $0 }; generationTask = Task { [weak self] in guard let self else { return }; do { try await self.api.stream(prompt: prompt, model: self.selectedModelID, mode: self.generationMode, history: history, sessionID: self.selectedSession?.id, attachment: attachment, baseURL: self.apiBaseURL) { [weak self] token, sessionID in Task { @MainActor in guard let self else { return }; if let sessionID { self.selectedSession = ChatSession(id: sessionID, title: Self.title(for: sessionID)) }; guard let index = self.messages.indices.last else { return }; self.messages[index].content += token } } } catch is CancellationError { } catch { self.messages[self.messages.count - 1].content = "Sorry, I couldn't generate a response. Check that the local runtime is running."; self.messages[self.messages.count - 1].status = .failed; self.report(error) }; self.isGenerating = false; if self.messages.last?.status == .streaming { self.messages[self.messages.count - 1].status = .complete }; await self.refresh() } }
+    func send(prompt: String, attachment: ChatAttachment?) async { guard !isGenerating else { return }; let user = ChatMessage(role: .user, content: prompt, fileName: attachment?.name, attachmentPath: attachment?.url.path, attachmentKind: attachment?.kind, modelUsed: selectedModelID, modeUsed: generationMode, status: .sending); let assistant = ChatMessage(role: .assistant, content: "", modelUsed: selectedModelID, modeUsed: generationMode, status: .streaming); messages += [user, assistant]; isGenerating = true; let history = messages.dropLast().map { $0 }; generationTask = Task { [weak self] in guard let self else { return }; do { try await self.api.stream(prompt: prompt, model: self.selectedModelID, mode: self.generationMode, history: history, sessionID: self.selectedSession?.id, attachment: attachment, baseURL: self.apiBaseURL) { [weak self] token, sessionID in Task { @MainActor in guard let self else { return }; if let sessionID { self.selectedSession = ChatSession(id: sessionID, title: Self.title(for: sessionID)) }; guard let index = self.messages.indices.last else { return }; self.messages[index].content += token } } } catch is CancellationError { } catch { self.messages[self.messages.count - 1].content = "Sorry, I couldn't generate a response. Check that the local runtime is running."; self.messages[self.messages.count - 1].status = .failed; self.report(error) }; self.isGenerating = false; if self.messages.last?.status == .streaming { self.messages[self.messages.count - 1].status = .complete }; await self.refresh() } }
     /// Cancellation propagates into the URLSession streaming task, not just the visible UI.
     func stopGeneration() { generationTask?.cancel(); generationTask = nil; isGenerating = false }
     private func report(_ error: Error) { errorMessage = error.localizedDescription; isShowingError = true }

@@ -105,5 +105,5 @@ actor LocalMindAPI {
 private struct EmptyResponse: Decodable {}
 private struct StreamEvent: Decodable { let token: String?; let session_id: String? }
 private struct ServerMessage: Decodable { let role: MessageRole; let content: JSONValue; let fileName: String?; let modelUsed: String?; let modeUsed: GenerationMode? }
-private extension ChatMessage { init(_ server: ServerMessage) { self.init(role: server.role, content: server.content.stringValue, fileName: server.fileName, modelUsed: server.modelUsed, modeUsed: server.modeUsed) } }
+private extension ChatMessage { init(_ server: ServerMessage) { let cachedPath = ChatAttachment.cachedPath(for: server.fileName); self.init(role: server.role, content: server.content.stringValue, fileName: server.fileName, attachmentPath: cachedPath, attachmentKind: cachedPath.map { AttachmentKind.infer(from: URL(fileURLWithPath: $0)) }, modelUsed: server.modelUsed, modeUsed: server.modeUsed) } }
 private enum JSONValue: Decodable { case string(String), other; init(from decoder: Decoder) throws { if let value = try? decoder.singleValueContainer().decode(String.self) { self = .string(value) } else { self = .other } }; var stringValue: String { if case .string(let value) = self { value } else { "" } } }
